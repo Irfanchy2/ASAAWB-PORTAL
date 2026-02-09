@@ -1,7 +1,8 @@
 {
   "name": "ASAAWB",
-  "description": "A comprehensive expense tracking application with AI-powered receipt OCR, employee digital wallets, and admin approval workflows with Tally integration.",
+  "description": "A comprehensive HR, Payroll, and Expense tracking application with AI-powered receipt OCR, employee digital wallets, attendance tracking, and Tally integration.",
   "requestFramePermissions": [
-    "camera"
+    "camera",
+    "geolocation"
   ]
 }

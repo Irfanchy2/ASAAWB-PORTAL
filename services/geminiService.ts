@@ -3,17 +3,15 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { OCRResult } from "../types";
 import { CATEGORIES } from "../constants";
 
-// Always use const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 /**
- * Performs high-speed OCR using Gemini 3 Flash.
- * Optimized for Al Saqr Welding & Blacksmith LLC's business workflow.
+ * ULTRA TURBO OCR ENGINE v3.0 - Industrial Strength
+ * Optimized for Al Saqr Welding. Extreme precision on line items.
  */
 export const performOCR = async (base64Image: string): Promise<OCRResult> => {
   const model = "gemini-3-flash-preview";
-  
-  const categoriesList = CATEGORIES.join(", ");
+  const catList = CATEGORIES.join(",");
   
   const response = await ai.models.generateContent({
     model,
@@ -25,44 +23,18 @@ export const performOCR = async (base64Image: string): Promise<OCRResult> => {
             data: base64Image.split(',')[1] || base64Image,
           },
         },
-        {
-          text: `OCR Task for Al Saqr Welding.
-Extract exactly:
-1. Vendor (Name)
-2. Date (YYYY-MM-DD)
-3. Total Amount (Number)
-4. Items: [{description, quantity, price}]
-Categorize as one of: [${categoriesList}].
-Return JSON only. Accuracy is critical.`,
-        },
+        { text: "EXTRACT_DATA" },
       ],
     },
     config: {
+      systemInstruction: `You are a high-speed industrial OCR engine. 
+Output strictly JSON. 
+Detect: Date(YYYY-MM-DD), Vendor, Total Amount(Float), Currency, Category(one of: [${catList}]), and Line Items.
+For items: [{description: string, quantity: number, price: number}].
+If handwriting or blurry, use best professional guess. Total must be numeric.`,
       responseMimeType: "application/json",
-      thinkingConfig: { thinkingBudget: 0 }, // Disable thinking for maximum speed
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          date: { type: Type.STRING },
-          vendor: { type: Type.STRING },
-          amount: { type: Type.NUMBER },
-          currency: { type: Type.STRING },
-          category: { type: Type.STRING },
-          items: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                description: { type: Type.STRING },
-                quantity: { type: Type.NUMBER },
-                price: { type: Type.NUMBER }
-              },
-              required: ['description', 'quantity', 'price']
-            }
-          }
-        },
-        required: ['date', 'vendor', 'amount', 'currency', 'category', 'items'],
-      },
+      temperature: 0, 
+      maxOutputTokens: 1000,
     },
   });
 
@@ -70,20 +42,38 @@ Return JSON only. Accuracy is critical.`,
     const text = response.text || "{}";
     const result = JSON.parse(text) as OCRResult;
     
+    // Numeric sanitation for industrial reliability
+    const sanitizeNum = (val: any) => {
+      if (typeof val === 'number') return val;
+      const parsed = parseFloat(String(val).replace(/[^0-9.]/g, ''));
+      return isNaN(parsed) ? 0 : parsed;
+    };
+
+    result.amount = sanitizeNum(result.amount);
+    
+    if (result.items) {
+      result.items = result.items.map(item => ({
+        description: item.description || 'Unknown Item',
+        quantity: sanitizeNum(item.quantity) || 1,
+        price: sanitizeNum(item.price) || 0
+      }));
+    } else {
+      result.items = [];
+    }
+
+    // Fallback category logic
     if (!CATEGORIES.includes(result.category)) {
-      const bestMatch = CATEGORIES.find(c => 
-        result.category.toLowerCase().includes(c.toLowerCase()) || 
-        c.toLowerCase().includes(result.category.toLowerCase())
-      );
-      result.category = bestMatch || 'Others';
+      result.category = CATEGORIES.find(c => 
+        result.category?.toLowerCase().includes(c.toLowerCase())
+      ) || 'Others';
     }
     
     return result;
   } catch (e) {
-    console.error("Fast OCR failed", e);
+    console.error("OCR Parse Failure:", e);
     return {
       date: new Date().toISOString().split('T')[0],
-      vendor: 'Check Receipt Manually',
+      vendor: 'Manual Correction Required',
       amount: 0,
       currency: 'AED',
       category: 'Others',
@@ -93,13 +83,12 @@ Return JSON only. Accuracy is critical.`,
 };
 
 export const chatWithAssistant = async (history: { role: 'user' | 'model', parts: { text: string }[] }[], message: string) => {
-  const model = "gemini-3-pro-preview";
+  const model = "gemini-3-flash-preview";
   const chat = ai.chats.create({
     model,
     history: history,
     config: {
-      systemInstruction: "Al Saqr Finance Assistant. Professional, precise.",
-      thinkingConfig: { thinkingBudget: 8000 }
+      systemInstruction: "You are the Al Saqr Finance Assistant. Fast, direct, industrial tone. Expert in UAE labor law and site expenses.",
     }
   });
   const response = await chat.sendMessage({ message });

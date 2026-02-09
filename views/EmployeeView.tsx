@@ -1,104 +1,125 @@
 
-import React, { useState, useRef } from 'react';
-import { Plus, Receipt, ArrowRight, DollarSign, Wallet, CreditCard, ChevronRight, X as XIcon, HandCoins, Tag, Calendar, Building2, CheckCircle2, ShieldCheck, Zap, AlertCircle, Sparkles, FileEdit, PenTool } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { 
+  Plus, Receipt, ArrowRight, DollarSign, Wallet, CreditCard, 
+  ChevronRight, X as XIcon, HandCoins, Tag, Calendar, 
+  Building2, CheckCircle2, ShieldCheck, Zap, AlertCircle, 
+  Sparkles, FileEdit, PenTool, Timer, LogIn, LogOut, Briefcase, TrendingUp, Activity, Edit3, ArrowUpCircle,
+  ShieldAlert, ChevronLeft, ChevronDown, Filter, Camera
+} from 'lucide-react';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
-import { User, Transaction, TransactionStatus, PaymentMode, OCRResult } from '../types';
+import { User, Transaction, TransactionStatus, PaymentMode, OCRResult, AttendanceRecord, UserRole } from '../types';
 import { performOCR } from '../services/geminiService';
 import { CATEGORIES } from '../constants';
 
 interface EmployeeViewProps {
   user: User;
   transactions: Transaction[];
+  attendance: AttendanceRecord[];
   onAddTransaction: (t: Partial<Transaction>) => void;
+  onPunchIn: () => void;
+  onPunchOut: () => void;
+  isAdminViewing?: boolean;
+  onClosePreview?: () => void;
 }
 
-/**
- * Resizes an image to speed up API processing and reduce upload time.
- */
-const resizeImage = (file: File, maxWidth = 1000): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.readAsDataURL(file);
-    reader.onload = (event) => {
-      const img = new Image();
-      img.src = event.target?.result as string;
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let width = img.width;
-        let height = img.height;
-
-        if (width > height) {
-          if (width > maxWidth) {
-            height *= maxWidth / width;
-            width = maxWidth;
-          }
-        } else {
-          if (height > maxWidth) {
-            width *= maxWidth / height;
-            height = maxWidth;
-          }
-        }
-
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx?.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/jpeg', 0.8)); // 0.8 quality JPEG
-      };
-      img.onerror = reject;
-    };
-    reader.onerror = reject;
-  });
-};
-
-export const EmployeeView: React.FC<EmployeeViewProps> = ({ user, transactions, onAddTransaction }) => {
+export const EmployeeView: React.FC<EmployeeViewProps> = ({ 
+  user, transactions, attendance, onAddTransaction, onPunchIn, onPunchOut,
+  isAdminViewing, onClosePreview
+}) => {
+  const [activeTab, setActiveTab] = useState<'EXPENSES' | 'WORK'>('WORK');
   const [isProcessing, setIsProcessing] = useState(false);
-  const [scanStep, setScanStep] = useState<'IDLE' | 'CAMERA' | 'REVIEW' | 'ADD_FUNDS' | 'SUCCESS'>('IDLE');
+  const [scanStep, setScanStep] = useState<'IDLE' | 'REVIEW' | 'SUCCESS' | 'TOPUP'>('IDLE');
   const [ocrData, setOcrData] = useState<OCRResult | null>(null);
+  const [topupAmount, setTopupAmount] = useState<string>('');
   const [paymentMode, setPaymentMode] = useState<PaymentMode>(PaymentMode.CASH);
-  const [cardLast4, setCardLast4] = useState('');
   const [receiptImage, setReceiptImage] = useState<string | null>(null);
-  const [fundAmount, setFundAmount] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [elapsedTime, setElapsedTime] = useState('00:00:00');
+  const [attendanceMonth, setAttendanceMonth] = useState(new Date().getMonth());
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const myTransactions = transactions
-    .filter(t => t.userId === user.id)
-    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const activeShift = attendance.find(a => a.id === user.activeShiftId);
+
+  useEffect(() => {
+    let interval: any;
+    if (activeShift) {
+      interval = setInterval(() => {
+        const start = new Date(activeShift.checkIn);
+        const now = new Date();
+        const diff = now.getTime() - start.getTime();
+        const hrs = Math.floor(diff / 3600000);
+        const mins = Math.floor((diff % 3600000) / 60000);
+        const secs = Math.floor((diff % 60000) / 1000);
+        setElapsedTime(`${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`);
+      }, 1000);
+    } else {
+      setElapsedTime('00:00:00');
+    }
+    return () => clearInterval(interval);
+  }, [activeShift]);
+
+  const monthlyStats = useMemo(() => {
+    const currentMonth = new Date().getMonth();
+    const records = attendance.filter(a => new Date(a.date).getMonth() === currentMonth);
+    const totalOT = records.reduce((sum, r) => sum + (r.overtimeHours || 0), 0);
+    const totalWorked = records.reduce((sum, r) => sum + (r.totalHours || 0), 0);
+    const otPay = totalOT * (user.otRate || 0);
+    
+    const reimbursements = transactions
+      .filter(t => t.userId === user.id && t.status === TransactionStatus.APPROVED && t.type === 'EXPENSE' && t.paymentMode === PaymentMode.CARD)
+      .reduce((sum, t) => sum + (t.amount || 0), 0);
+    
+    return {
+      totalOT,
+      totalWorked,
+      earnings: (user.baseSalary || 0) + otPay + reimbursements
+    };
+  }, [attendance, user, transactions]);
+
+  const filteredAttendance = useMemo(() => {
+    return attendance
+      .filter(a => 
+        a.userId === user.id && 
+        a.checkOut && 
+        new Date(a.date).getMonth() === attendanceMonth
+      )
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [attendance, user.id, attendanceMonth]);
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    setError(null);
     setIsProcessing(true);
-    setScanStep('CAMERA');
-    
+    setScanStep('REVIEW');
     try {
-      const compressedBase64 = await resizeImage(file);
-      setReceiptImage(compressedBase64);
-      const result = await performOCR(compressedBase64);
-      setOcrData(result);
-      setScanStep('REVIEW');
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64 = reader.result as string;
+        setReceiptImage(base64);
+        try {
+          const result = await performOCR(base64);
+          setOcrData(result);
+        } catch (ocrErr) {
+          setOcrData({
+            date: new Date().toISOString().split('T')[0],
+            vendor: '',
+            amount: 0,
+            currency: 'AED',
+            category: 'Others',
+            items: []
+          });
+        }
+        setIsProcessing(false);
+      };
+      reader.readAsDataURL(file);
     } catch (err) {
-      console.error("OCR Error:", err);
-      setError("Rapid scan failed. Please check your internet or entry details.");
-      setOcrData({
-        date: new Date().toISOString().split('T')[0],
-        vendor: '',
-        amount: 0,
-        currency: 'AED',
-        category: 'Others',
-        items: []
-      });
-      setScanStep('REVIEW');
-    } finally {
       setIsProcessing(false);
+      setScanStep('IDLE');
     }
   };
 
-  const handleManualEntry = () => {
+  const startManualEntry = () => {
     setOcrData({
       date: new Date().toISOString().split('T')[0],
       vendor: '',
@@ -109,316 +130,361 @@ export const EmployeeView: React.FC<EmployeeViewProps> = ({ user, transactions, 
     });
     setReceiptImage(null);
     setScanStep('REVIEW');
+    setIsProcessing(false);
   };
 
-  const handleSubmit = () => {
+  const handleExpenseSubmit = () => {
     if (!ocrData) return;
-    
     onAddTransaction({
       userId: user.id,
       userName: user.name,
       date: ocrData.date,
-      vendor: ocrData.vendor || 'AL SAQR Purchase',
-      amount: ocrData.amount,
-      category: ocrData.category,
-      items: ocrData.items,
+      vendor: ocrData.vendor || 'Manual Expense Entry',
+      amount: ocrData.amount || 0,
+      category: ocrData.category || 'Others',
       paymentMode,
-      cardLast4: paymentMode === PaymentMode.CARD ? cardLast4 : undefined,
       status: TransactionStatus.PENDING,
       type: 'EXPENSE',
       receiptUrl: receiptImage || undefined,
     });
-    
     setScanStep('SUCCESS');
     setTimeout(() => {
       setScanStep('IDLE');
       setOcrData(null);
-      setReceiptImage(null);
-      setPaymentMode(PaymentMode.CASH);
-      setCardLast4('');
-      setError(null);
-    }, 1200);
+    }, 1500);
   };
 
-  const handleLogFunds = () => {
-    const amount = parseFloat(fundAmount);
-    if (isNaN(amount) || amount <= 0) return;
-
+  const handleTopupSubmit = () => {
+    const amountNum = parseFloat(topupAmount);
+    if (isNaN(amountNum) || amountNum <= 0) return;
+    
     onAddTransaction({
       userId: user.id,
       userName: user.name,
       date: new Date().toISOString().split('T')[0],
-      vendor: 'Cash Top-up Request',
-      amount: amount,
-      status: TransactionStatus.PENDING, 
+      vendor: 'Personal Wallet Top-up',
+      amount: amountNum,
+      category: 'Top-up',
       paymentMode: PaymentMode.CASH,
+      status: TransactionStatus.PENDING,
       type: 'TOPUP',
     });
-
-    setFundAmount('');
     setScanStep('SUCCESS');
-    setTimeout(() => setScanStep('IDLE'), 1200);
+    setTopupAmount('');
+    setTimeout(() => {
+      setScanStep('IDLE');
+    }, 1500);
   };
 
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
   return (
-    <div className="max-w-md mx-auto min-h-screen bg-white pb-40 font-sans">
-      <div className="bg-emerald-900 p-10 rounded-b-[64px] text-center shadow-2xl relative overflow-hidden border-b-8 border-red-700">
-        <div className="absolute top-0 right-0 p-6 opacity-20">
-           <ShieldCheck size={120} className="text-white" />
-        </div>
-        
-        <div className="relative z-10">
-          <p className="text-emerald-200 text-[10px] font-black uppercase tracking-[0.3em] mb-2">Available Balance</p>
-          <h1 className="text-6xl font-black text-white mb-2 tracking-tighter">
-            {user.balance.toFixed(2)} <span className="text-2xl font-bold opacity-60">AED</span>
-          </h1>
-          <div className="flex items-center justify-center gap-2 mt-6">
-             <button 
-              onClick={() => setScanStep('ADD_FUNDS')}
-              className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-full transition-all font-black text-[10px] uppercase tracking-widest backdrop-blur-md border border-white/20"
-            >
-              <HandCoins size={14} /> Request Top-up
-            </button>
+    <div className="max-w-md mx-auto bg-slate-50 dark:bg-zinc-950 min-h-screen pb-40 relative overflow-hidden flex flex-col transition-colors duration-300">
+      {isAdminViewing && (
+        <div className="bg-amber-500 text-white px-4 sm:px-6 py-3.5 sm:py-4 flex justify-between items-center shadow-xl z-[150] sticky top-0 animate-in slide-in-from-top-full duration-500">
+          <div className="flex items-center gap-3">
+            <ShieldAlert size={18} />
+            <span className="text-[9px] sm:text-[10px] font-black uppercase tracking-widest truncate max-w-[180px]">Admin View: {user.name}</span>
           </div>
-        </div>
-      </div>
-
-      <div className="px-8 mt-10">
-        <div className="flex justify-between items-center mb-8">
-          <h2 className="text-xl font-black text-emerald-900 uppercase tracking-tight">Records</h2>
-          <button className="text-red-700 text-[10px] font-black uppercase tracking-widest hover:underline">History</button>
-        </div>
-
-        <div className="space-y-4">
-          {myTransactions.map(t => (
-            <div key={t.id} className="flex items-center gap-4 p-5 rounded-[32px] bg-white border border-slate-100 hover:shadow-xl hover:border-emerald-100 transition-all group">
-              <div className={`p-4 rounded-2xl shrink-0 ${t.type === 'TOPUP' ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-50 text-slate-400'}`}>
-                {t.type === 'TOPUP' ? <Wallet size={24} /> : (t.paymentMode === PaymentMode.CARD ? <CreditCard size={24} /> : <Receipt size={24} />)}
-              </div>
-              <div className="flex-1 min-w-0">
-                <h3 className="font-black text-emerald-950 truncate text-sm uppercase tracking-tight">{t.vendor}</h3>
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">
-                  {t.paymentMode} • {t.date}
-                </p>
-              </div>
-              <div className="text-right shrink-0">
-                <p className={`font-black text-lg ${t.type === 'TOPUP' ? 'text-emerald-600' : 'text-slate-800'}`}>
-                  {t.type === 'TOPUP' ? '+' : '-'}{t.amount.toFixed(2)}
-                </p>
-                <span className={`text-[9px] px-2 py-0.5 rounded font-black uppercase tracking-[0.1em] ${
-                  t.status === TransactionStatus.APPROVED || t.status === TransactionStatus.COMPLETED ? 'bg-emerald-50 text-emerald-700' :
-                  t.status === TransactionStatus.PENDING ? 'bg-amber-50 text-amber-700' :
-                  t.status === TransactionStatus.REJECTED ? 'bg-red-50 text-red-700' :
-                  'bg-slate-50 text-slate-400'
-                }`}>
-                  {t.status}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Enhanced Floating Action Area */}
-      <div className="fixed bottom-0 left-0 right-0 p-8 flex flex-col items-center gap-4 bg-gradient-to-t from-white via-white/80 to-transparent pointer-events-none">
-        <div className="flex gap-6 pointer-events-auto items-end">
-          {/* Eye-Catchy Manual Entry Button */}
           <button 
-            onClick={handleManualEntry}
-            className="group relative flex flex-col items-center justify-center p-6 rounded-[32px] shadow-[0_15px_35px_rgba(15,23,42,0.2)] transition-all hover:scale-105 active:scale-95 w-24 h-24 overflow-hidden"
+            onClick={onClosePreview}
+            className="flex items-center gap-1.5 bg-white/20 px-3 py-1.5 rounded-xl font-bold text-[8px] sm:text-[9px] uppercase tracking-widest hover:bg-white/30 transition-all shrink-0"
           >
-            {/* Dark industrial background */}
-            <div className="absolute inset-0 bg-slate-900 group-hover:bg-slate-800 transition-colors" />
-            {/* Brand Red Accent Bar */}
-            <div className="absolute top-0 left-0 right-0 h-1.5 bg-red-600" />
-            {/* Glossy overlay */}
-            <div className="absolute inset-0 bg-gradient-to-tr from-transparent via-white/5 to-white/10 opacity-0 group-hover:opacity-100 transition-opacity" />
-            
-            <div className="relative z-10 flex flex-col items-center text-white">
-              <div className="p-2 bg-white/10 rounded-xl mb-1 group-hover:rotate-12 transition-transform">
-                <FileEdit size={24} strokeWidth={2.5} />
-              </div>
-              <span className="text-[9px] font-black uppercase tracking-[0.1em]">Manual</span>
-            </div>
-            
-            {/* Subtle glow effect */}
-            <div className="absolute -bottom-4 -right-4 w-12 h-12 bg-red-600/20 blur-xl group-hover:bg-red-600/30 transition-all rounded-full" />
+            <ChevronLeft size={14} /> Exit
           </button>
-
-          {/* Scan Button (Primary) */}
-          <button 
-            onClick={() => fileInputRef.current?.click()}
-            className="relative group overflow-hidden bg-emerald-800 hover:bg-emerald-900 text-white flex flex-col items-center justify-center p-10 rounded-full shadow-[0_20px_50px_rgba(6,95,70,0.3)] transition-all hover:scale-110 active:scale-95 w-28 h-28 ring-8 ring-white"
-          >
-            <div className="relative z-10 flex flex-col items-center">
-              <Plus size={36} strokeWidth={4} />
-              <span className="text-[10px] font-black uppercase tracking-[0.2em] mt-1">Scan</span>
-            </div>
-            {/* Animated Scanning Line */}
-            <div className="absolute inset-0 flex items-center justify-center">
-               <div className="w-full h-1 bg-emerald-400/30 blur-sm animate-[bounce_2s_infinite] opacity-0 group-hover:opacity-100" />
-            </div>
-          </button>
-        </div>
-        <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileChange} />
-      </div>
-
-      {/* Overlays / Modals */}
-      {scanStep !== 'IDLE' && (
-        <div className="fixed inset-0 z-50 bg-emerald-950/95 backdrop-blur-xl flex flex-col items-center justify-start p-6 overflow-y-auto scrollbar-hide">
-          {scanStep !== 'SUCCESS' && (
-            <div className="w-full flex justify-end mb-4 shrink-0 max-w-sm">
-              <button onClick={() => setScanStep('IDLE')} className="text-white/60 hover:text-white p-3 bg-white/10 rounded-full transition-colors">
-                <XIcon size={24} />
-              </button>
-            </div>
-          )}
-
-          {isProcessing ? (
-            <div className="text-center my-auto flex flex-col items-center p-8 animate-in fade-in duration-300">
-              <div className="relative mb-6">
-                <div className="w-16 h-16 border-4 border-emerald-400/20 border-t-emerald-400 rounded-full animate-spin" />
-                <div className="absolute inset-0 flex items-center justify-center text-emerald-400">
-                   <Zap size={20} className="animate-pulse" />
-                </div>
-              </div>
-              <h2 className="text-white text-xl font-black uppercase tracking-tighter mb-1">Turbo Scan...</h2>
-              <p className="text-emerald-200/40 font-bold text-[8px] uppercase tracking-[0.4em]">Gemini Flash Active</p>
-            </div>
-          ) : scanStep === 'REVIEW' && ocrData ? (
-            <div className="w-full max-w-sm bg-white rounded-[40px] overflow-hidden shadow-2xl animate-in fade-in zoom-in duration-200 mb-12 shrink-0">
-              <div className="p-8 space-y-8">
-                <div className="text-center">
-                  <div className="w-12 h-12 bg-emerald-50 text-emerald-800 rounded-full flex items-center justify-center mx-auto mb-3">
-                    {receiptImage ? <Sparkles size={24} className="text-emerald-600" /> : <FileEdit size={24} className="text-emerald-600" />}
-                  </div>
-                  <h2 className="text-xl font-black text-emerald-900 uppercase tracking-tighter">{receiptImage ? 'Record Found' : 'Manual Expense'}</h2>
-                  <p className="text-slate-400 text-[9px] font-black uppercase tracking-widest mt-1">{receiptImage ? 'Audit AI Detection' : 'Fill Entry Details'}</p>
-                </div>
-
-                {error && (
-                  <div className="bg-amber-50 border border-amber-100 p-3 rounded-2xl flex gap-3 items-start">
-                    <AlertCircle size={16} className="text-amber-600 shrink-0 mt-0.5" />
-                    <p className="text-[9px] font-bold text-amber-700 leading-tight uppercase tracking-tight">{error}</p>
-                  </div>
-                )}
-
-                <div className="space-y-4">
-                  <div className="relative">
-                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-1.5 ml-1">Vendor / Description</label>
-                    <input 
-                      type="text" 
-                      value={ocrData.vendor} 
-                      placeholder="e.g. Workers Meal"
-                      onChange={e => setOcrData(prev => prev ? {...prev, vendor: e.target.value} : null)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-black text-emerald-950 uppercase text-xs focus:ring-4 focus:ring-emerald-500/10 outline-none" 
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-1.5 ml-1">Amount (AED)</label>
-                      <input 
-                        type="number" 
-                        step="0.01"
-                        value={ocrData.amount || ''} 
-                        placeholder="0.00"
-                        onChange={e => setOcrData(prev => prev ? {...prev, amount: parseFloat(e.target.value) || 0} : null)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-black text-emerald-950 text-xs focus:ring-4 focus:ring-emerald-500/10 outline-none" 
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-1.5 ml-1">Entry Date</label>
-                      <input 
-                        type="date" 
-                        value={ocrData.date} 
-                        onChange={e => setOcrData(prev => prev ? {...prev, date: e.target.value} : null)}
-                        className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-black text-emerald-950 text-xs focus:ring-4 focus:ring-emerald-500/10 outline-none" 
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-1.5 ml-1">Business Category</label>
-                    <select 
-                      value={ocrData.category} 
-                      onChange={e => setOcrData(prev => prev ? {...prev, category: e.target.value} : null)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 font-black text-emerald-950 text-xs appearance-none focus:ring-4 focus:ring-emerald-500/10 outline-none"
-                    >
-                      {CATEGORIES.map(cat => (
-                        <option key={cat} value={cat}>{cat}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-1.5 ml-1">Settlement</label>
-                    <div className="flex bg-slate-100 rounded-xl p-1 gap-1">
-                      <button 
-                        onClick={() => setPaymentMode(PaymentMode.CASH)}
-                        className={`flex-1 py-2.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${paymentMode === PaymentMode.CASH ? 'bg-white shadow-sm text-emerald-800' : 'text-slate-400'}`}
-                      >
-                        Cash
-                      </button>
-                      <button 
-                        onClick={() => setPaymentMode(PaymentMode.CARD)}
-                        className={`flex-1 py-2.5 rounded-lg text-[9px] font-black uppercase tracking-widest transition-all ${paymentMode === PaymentMode.CARD ? 'bg-white shadow-sm text-emerald-800' : 'text-slate-400'}`}
-                      >
-                        Card
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="pt-6 pb-2">
-                  <Button 
-                    disabled={!ocrData.vendor || ocrData.amount <= 0}
-                    onClick={handleSubmit} 
-                    className="w-full py-4 bg-emerald-800 text-white rounded-xl font-black uppercase tracking-widest text-sm shadow-xl shadow-emerald-900/40 hover:bg-emerald-900 active:scale-95"
-                  >
-                    Authorize Claim <ArrowRight size={18} />
-                  </Button>
-                </div>
-              </div>
-            </div>
-          ) : scanStep === 'ADD_FUNDS' ? (
-            <div className="w-full max-w-sm bg-white rounded-[40px] overflow-hidden shadow-2xl animate-in fade-in zoom-in duration-200 my-auto p-10 space-y-8 shrink-0">
-                <div className="text-center">
-                  <div className="w-16 h-16 bg-emerald-50 text-emerald-800 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <HandCoins size={32} />
-                  </div>
-                  <h2 className="text-2xl font-black text-emerald-900 uppercase tracking-tighter">Request Funds</h2>
-                  <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mt-1">Wallet Protocol</p>
-                </div>
-
-                <div className="space-y-6">
-                  <input 
-                    type="number" 
-                    autoFocus
-                    placeholder="0.00"
-                    value={fundAmount}
-                    onChange={e => setFundAmount(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-2xl px-4 py-6 text-4xl font-black text-emerald-950 text-center focus:ring-4 focus:ring-emerald-500/10 outline-none" 
-                  />
-                </div>
-
-                <Button onClick={handleLogFunds} className="w-full py-5 bg-emerald-800 text-white rounded-2xl font-black uppercase tracking-widest text-base shadow-xl shadow-emerald-900/20">
-                  Send Request
-                </Button>
-            </div>
-          ) : scanStep === 'SUCCESS' ? (
-            <div className="text-center my-auto animate-in zoom-in duration-300 flex flex-col items-center">
-               <div className="w-20 h-20 bg-emerald-500 text-white rounded-full flex items-center justify-center mx-auto mb-6 shadow-lg shadow-emerald-500/50">
-                 <CheckCircle2 size={40} strokeWidth={4} />
-               </div>
-               <h2 className="text-white text-2xl font-black uppercase tracking-tighter mb-1">Success</h2>
-               <p className="text-emerald-200 font-bold text-[8px] uppercase tracking-[0.4em]">Ledger Updated</p>
-            </div>
-          ) : null}
-          
-          <div className="h-24 w-full shrink-0" />
         </div>
       )}
+
+      <div className="absolute top-[-5%] left-[-5%] w-[60%] h-[20%] bg-emerald-100/50 dark:bg-emerald-950/20 blur-[80px] rounded-full z-0" />
+      
+      <div className="relative z-10 flex-1 overflow-y-auto scrollbar-hide">
+        {activeTab === 'WORK' ? (
+          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+            <div className="p-6 sm:p-8 pb-12 sm:pb-16 bg-gradient-to-br from-emerald-900 via-emerald-950 to-black rounded-b-[3rem] sm:rounded-b-[4rem] text-white shadow-2xl relative overflow-hidden">
+               <div className="absolute top-0 right-0 p-4 opacity-10">
+                  <Activity size={100} />
+               </div>
+               
+               <div className="relative z-10">
+                  <div className="flex justify-between items-start mb-6 sm:mb-8">
+                    <div>
+                      <p className="text-emerald-400 text-[9px] sm:text-[10px] font-black uppercase tracking-[0.2em]">Session Active</p>
+                      <h2 className="text-lg sm:text-xl font-bold mt-1">Industrial Portal</h2>
+                    </div>
+                    <div className="bg-white/10 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/10 flex items-center gap-2">
+                       <div className={`w-2 h-2 rounded-full ${activeShift ? 'bg-emerald-400 animate-pulse' : 'bg-slate-400'}`} />
+                       <span className="text-[9px] font-bold uppercase tracking-wider">{activeShift ? 'Live' : 'Standby'}</span>
+                    </div>
+                  </div>
+
+                  <div className="text-center mt-2 sm:mt-4">
+                    <p className="text-emerald-200/60 text-[9px] sm:text-[10px] font-bold uppercase tracking-[0.3em] mb-1 sm:mb-2">Monthly Accrued</p>
+                    <h1 className="text-4xl sm:text-5xl font-black tracking-tighter tabular-nums">
+                      {(monthlyStats.earnings || 0).toLocaleString()}
+                      <span className="text-base sm:text-lg ml-2 font-medium opacity-40">AED</span>
+                    </h1>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 mt-8 sm:mt-10">
+                    <div className="bg-white/5 border border-white/10 p-4 rounded-2xl sm:rounded-3xl backdrop-blur-sm">
+                       <p className="text-[8px] sm:text-[9px] font-bold uppercase opacity-50 tracking-widest mb-1">Total Hrs</p>
+                       <div className="flex items-center gap-2">
+                          <Timer size={14} className="text-emerald-400" />
+                          <p className="text-base sm:text-lg font-bold">{(monthlyStats.totalWorked || 0).toFixed(1)}</p>
+                       </div>
+                    </div>
+                    <div className="bg-white/5 border border-white/10 p-4 rounded-2xl sm:rounded-3xl backdrop-blur-sm">
+                       <p className="text-[8px] sm:text-[9px] font-bold uppercase opacity-50 tracking-widest mb-1">OT Bonus</p>
+                       <div className="flex items-center gap-2">
+                          <Zap size={14} className="text-amber-400" />
+                          <p className="text-base sm:text-lg font-bold text-amber-400">{(monthlyStats.totalOT || 0).toFixed(1)}</p>
+                       </div>
+                    </div>
+                  </div>
+               </div>
+            </div>
+
+            <div className="px-5 sm:px-6 space-y-6 -mt-8 pb-10">
+              <Card className="rounded-[2.5rem] sm:rounded-[3rem] p-8 sm:p-10 flex flex-col items-center border-none shadow-2xl relative bg-white/80 dark:bg-zinc-900/80 backdrop-blur-xl">
+                 <div className="w-full text-center">
+                    <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-slate-50 dark:bg-zinc-800 rounded-full border border-slate-100 dark:border-zinc-700 mb-4">
+                        <Calendar size={12} className="text-slate-400 dark:text-zinc-500" />
+                        <span className="text-[9px] font-bold text-slate-500 dark:text-zinc-400 uppercase tracking-widest">Shift Sync v2.5</span>
+                    </div>
+                    <div className={`text-5xl sm:text-6xl font-black tracking-tighter font-mono ${activeShift ? 'text-emerald-950 dark:text-emerald-50' : 'text-slate-300 dark:text-zinc-800'}`}>
+                      {elapsedTime}
+                    </div>
+                 </div>
+
+                 <div className="w-full mt-8 sm:mt-10">
+                   {activeShift ? (
+                     <button onClick={onPunchOut} className="w-full group relative overflow-hidden active:scale-95 transition-transform rounded-2xl sm:rounded-3xl">
+                       <div className="absolute inset-0 bg-red-600 rounded-2xl sm:rounded-3xl transition-transform duration-300 group-hover:scale-105" />
+                       <div className="relative py-6 sm:py-8 flex flex-col items-center gap-1 sm:gap-2 text-white">
+                         <LogOut size={24} sm-size={28} className="animate-bounce" />
+                         <span className="font-black text-base sm:text-lg uppercase tracking-[0.2em]">End Session</span>
+                       </div>
+                     </button>
+                   ) : (
+                     <button onClick={onPunchIn} className="w-full group relative overflow-hidden active:scale-95 transition-transform rounded-2xl sm:rounded-3xl">
+                       <div className="absolute inset-0 bg-emerald-700 rounded-2xl sm:rounded-3xl transition-transform duration-300 group-hover:scale-105" />
+                       <div className="relative py-6 sm:py-8 flex flex-col items-center gap-1 sm:gap-2 text-white">
+                         <LogIn size={24} sm-size={28} className="group-hover:translate-x-1 transition-transform" />
+                         <span className="font-black text-base sm:text-lg uppercase tracking-[0.2em]">Start Shift</span>
+                       </div>
+                     </button>
+                   )}
+                 </div>
+              </Card>
+
+              <div className="pb-10">
+                <div className="flex justify-between items-center mb-4 px-2">
+                   <h3 className="text-[9px] sm:text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest">Recent Logs</h3>
+                   <div className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/20 px-3 py-1 rounded-lg">
+                      <Filter size={10} />
+                      <span className="text-[8px] font-black uppercase tracking-widest">{months[attendanceMonth]}</span>
+                   </div>
+                </div>
+
+                <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-4">
+                  {months.map((m, i) => (
+                    <button 
+                      key={m}
+                      onClick={() => setAttendanceMonth(i)}
+                      className={`flex-shrink-0 px-4 py-2 rounded-xl text-[8px] font-black uppercase tracking-widest transition-all ${attendanceMonth === i ? 'bg-emerald-900 text-white shadow-md' : 'bg-white dark:bg-zinc-900 text-slate-400 dark:text-zinc-500 border border-slate-100 dark:border-zinc-800'}`}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="space-y-3">
+                   {filteredAttendance.length === 0 ? (
+                     <div className="py-12 text-center bg-white dark:bg-zinc-900 rounded-[2rem] border border-slate-100 dark:border-zinc-800 border-dashed">
+                        <p className="text-[9px] font-bold text-slate-400 dark:text-zinc-500 uppercase tracking-widest">Empty</p>
+                     </div>
+                   ) : filteredAttendance.map(record => (
+                     <div key={record.id} className="bg-white dark:bg-zinc-900 p-4 rounded-2xl border border-slate-100 dark:border-zinc-800 flex items-center justify-between shadow-sm">
+                        <div className="flex items-center gap-3 min-w-0">
+                           <div className="w-10 h-10 bg-slate-50 dark:bg-zinc-800 rounded-xl flex items-center justify-center text-slate-400 dark:text-zinc-500 shrink-0">
+                              <Calendar size={18} />
+                           </div>
+                           <div className="min-w-0">
+                              <p className="text-xs font-black text-emerald-950 dark:text-emerald-50 uppercase truncate">
+                                {new Date(record.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                              </p>
+                              <p className="text-[9px] text-slate-400 dark:text-zinc-500 uppercase font-bold">{(record.totalHours || 0).toFixed(1)}H</p>
+                           </div>
+                        </div>
+                        <span className={`px-2 py-0.5 rounded-full text-[7px] font-black uppercase tracking-widest shrink-0 ${record.status === 'APPROVED' ? 'bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400' : 'bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400'}`}>
+                          {record.status === 'APPROVED' ? 'Verified' : 'Pending'}
+                        </span>
+                     </div>
+                   ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="p-6 sm:p-8 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-32">
+             <div className="flex justify-between items-center">
+                <div className="min-w-0 pr-4">
+                  <h2 className="text-3xl sm:text-4xl font-black text-emerald-950 dark:text-emerald-50 tracking-tighter">FINANCE</h2>
+                  <p className="text-slate-400 dark:text-zinc-500 text-[9px] sm:text-[10px] font-black uppercase tracking-[0.3em] mt-1">Wallet Ledger</p>
+                </div>
+                <div className="text-right shrink-0">
+                  <p className="text-2xl sm:text-3xl font-black text-emerald-700 dark:text-emerald-400 tracking-tighter tabular-nums">{(user.balance || 0).toFixed(2)}</p>
+                  <p className="text-[8px] sm:text-[9px] font-bold text-slate-400 dark:text-zinc-500 uppercase tracking-widest">AED Credits</p>
+                  <button 
+                    onClick={() => setScanStep('TOPUP')}
+                    className="mt-3 flex items-center gap-1.5 bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 px-3 py-1.5 rounded-full text-[8px] sm:text-[9px] font-black uppercase tracking-wider hover:bg-emerald-200 dark:hover:bg-emerald-900/40 transition-all shadow-sm active:scale-90"
+                  >
+                    <Plus size={12} strokeWidth={3} />
+                    Top-up
+                  </button>
+                </div>
+             </div>
+
+             <div className="pb-10">
+                <h3 className="text-[9px] sm:text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest mb-4 px-2">History</h3>
+                <div className="space-y-3">
+                   {transactions.filter(t => t.userId === user.id).slice(0, 15).map(t => (
+                     <div key={t.id} className="bg-white dark:bg-zinc-900 p-4 sm:p-5 rounded-[1.5rem] sm:rounded-[2rem] border border-slate-100 dark:border-zinc-800 flex items-center gap-3 sm:gap-4 group hover:border-emerald-200 dark:hover:border-emerald-800 transition-all shadow-sm">
+                       <div className={`w-12 h-12 sm:w-14 sm:h-14 rounded-2xl flex items-center justify-center transition-colors shrink-0 ${t.type === 'TOPUP' ? 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-600 dark:text-emerald-400' : 'bg-slate-50 dark:bg-zinc-800 text-slate-400 dark:text-zinc-500 group-hover:bg-emerald-50 dark:group-hover:bg-emerald-950/30 group-hover:text-emerald-600 dark:group-hover:text-emerald-400'}`}>
+                         {t.type === 'TOPUP' ? <ArrowUpCircle size={22} /> : <Receipt size={22} />}
+                       </div>
+                       <div className="flex-1 min-w-0">
+                         <p className="text-xs sm:text-sm font-bold text-emerald-950 dark:text-emerald-50 uppercase truncate tracking-tight">{t.vendor}</p>
+                         <p className="text-[8px] sm:text-[9px] font-bold text-slate-400 dark:text-zinc-500 uppercase mt-0.5">{new Date(t.date).toLocaleDateString()}</p>
+                       </div>
+                       <div className="text-right shrink-0">
+                         <p className={`font-black tracking-tighter text-base sm:text-lg tabular-nums ${t.type === 'TOPUP' ? 'text-emerald-700 dark:text-emerald-400' : 'text-emerald-950 dark:text-emerald-50'}`}>
+                            {t.type === 'TOPUP' ? '+' : '-'}{(t.amount || 0).toFixed(0)}
+                            <span className="text-[9px] ml-0.5 font-medium opacity-40">.{((t.amount || 0) % 1).toFixed(2).substring(2)}</span>
+                         </p>
+                         <span className={`text-[7px] sm:text-[8px] font-black uppercase px-2 py-0.5 rounded-full ${t.status === TransactionStatus.APPROVED ? 'bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400' : 'bg-slate-100 dark:bg-zinc-800 text-slate-500 dark:text-zinc-400'}`}>
+                            {t.status}
+                         </span>
+                       </div>
+                     </div>
+                   ))}
+                </div>
+             </div>
+          </div>
+        )}
+      </div>
+
+      {/* FIXED ACTION CLUSTER - Optimized Placement */}
+      {activeTab === 'EXPENSES' && scanStep === 'IDLE' && (
+        <div className="fixed bottom-28 left-0 right-0 px-8 flex justify-center items-center gap-6 z-[120] pointer-events-none">
+           <div className="pointer-events-auto flex flex-col items-center gap-2">
+              <button 
+                onClick={startManualEntry} 
+                className="w-12 h-12 bg-white dark:bg-zinc-800 border-2 border-slate-100 dark:border-zinc-700 text-emerald-900 dark:text-emerald-400 rounded-2xl shadow-xl flex items-center justify-center hover:scale-105 active:scale-95 transition-all"
+                title="Manual Entry"
+              >
+                <FileEdit size={20} />
+              </button>
+              <span className="text-[7px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest">Manual</span>
+           </div>
+
+           <div className="pointer-events-auto flex flex-col items-center gap-2">
+              <div className="relative group">
+                 <div className="absolute inset-0 bg-emerald-500 rounded-3xl animate-ping opacity-20 group-hover:opacity-0 transition-opacity" />
+                 <button 
+                    onClick={() => fileInputRef.current?.click()} 
+                    className="relative w-16 h-16 bg-emerald-900 dark:bg-emerald-700 text-white rounded-[1.75rem] shadow-[0_10px_40px_rgba(6,78,59,0.3)] flex items-center justify-center hover:scale-105 active:scale-95 transition-all border-4 border-slate-50 dark:border-zinc-950"
+                    title="Turbo Scan"
+                 >
+                   <Camera size={28} />
+                 </button>
+              </div>
+              <span className="text-[8px] font-black text-emerald-900 dark:text-emerald-400 uppercase tracking-[0.2em]">Turbo Scan</span>
+              <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileChange} />
+           </div>
+        </div>
+      )}
+
+      {/* Modal Layers */}
+      {scanStep !== 'IDLE' && (
+        <div className="fixed inset-0 z-[200] bg-emerald-950/95 dark:bg-zinc-950/95 backdrop-blur-2xl flex flex-col p-6 sm:p-8 items-center justify-center animate-in fade-in duration-300">
+          <button onClick={() => setScanStep('IDLE')} className="absolute top-6 right-6 sm:top-8 sm:right-8 text-white/40 dark:text-zinc-500 hover:text-white transition-colors">
+            <XIcon size={32} />
+          </button>
+          
+          {scanStep === 'TOPUP' ? (
+            <div className="w-full max-w-sm animate-in zoom-in-95 duration-300">
+               <div className="bg-white dark:bg-zinc-900 rounded-[2.5rem] sm:rounded-[3.5rem] p-8 sm:p-10 space-y-6 sm:space-y-8 shadow-2xl">
+                  <div className="text-center">
+                      <div className="inline-flex items-center gap-2 px-3 py-1 bg-emerald-50 dark:bg-emerald-950/20 rounded-full mb-3">
+                         <ArrowUpCircle size={14} className="text-emerald-600 dark:text-emerald-400" />
+                         <span className="text-[9px] font-bold text-emerald-700 dark:text-emerald-400 uppercase tracking-widest">Injection</span>
+                      </div>
+                      <h2 className="text-xl sm:text-2xl font-black text-emerald-950 dark:text-emerald-50 tracking-tighter uppercase">Wallet Top-up</h2>
+                  </div>
+                  <input type="number" value={topupAmount} onChange={e => setTopupAmount(e.target.value)} className="w-full px-6 py-6 sm:py-8 bg-slate-50 dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700 rounded-2xl sm:rounded-[2.5rem] text-3xl sm:text-4xl font-black tracking-tighter text-emerald-900 dark:text-emerald-50 focus:border-emerald-600 outline-none text-center transition-all" placeholder="0.00" autoFocus />
+                  <Button onClick={handleTopupSubmit} className="w-full py-5 rounded-2xl sm:rounded-[2rem] text-sm sm:text-base">Submit Request</Button>
+               </div>
+            </div>
+          ) : scanStep === 'REVIEW' && ocrData ? (
+             <div className="w-full max-w-sm animate-in slide-in-from-bottom-10 duration-500 overflow-y-auto max-h-[85vh] scrollbar-hide">
+                <div className="bg-white dark:bg-zinc-900 rounded-[2.5rem] sm:rounded-[3.5rem] p-8 sm:p-10 space-y-6 sm:space-y-8 shadow-2xl relative">
+                   <div className="text-center">
+                      <h2 className="text-xl sm:text-2xl font-black text-emerald-950 dark:text-emerald-50 tracking-tighter uppercase">Verify Scan</h2>
+                   </div>
+                   <div className="space-y-4 sm:space-y-5">
+                      <div className="space-y-1">
+                         <label className="text-[8px] sm:text-[9px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest ml-4">Merchant</label>
+                         <input value={ocrData.vendor} onChange={e => setOcrData({...ocrData, vendor: e.target.value})} className="w-full px-5 sm:px-6 py-3.5 sm:py-4 bg-slate-50 dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700 rounded-xl sm:rounded-2xl font-bold focus:border-emerald-600 outline-none transition-all text-emerald-950 dark:text-emerald-50 text-sm" placeholder="Vendor" />
+                      </div>
+                      <div className="space-y-1">
+                         <label className="text-[8px] sm:text-[9px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest ml-4">Amount (AED)</label>
+                         <input type="number" value={ocrData.amount} onChange={e => setOcrData({...ocrData, amount: parseFloat(e.target.value) || 0})} className="w-full px-5 sm:px-6 py-3.5 sm:py-4 bg-slate-50 dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700 rounded-xl sm:rounded-2xl font-bold focus:border-emerald-600 outline-none transition-all text-emerald-950 dark:text-emerald-50 text-sm" placeholder="0.00" />
+                      </div>
+                      <div className="space-y-1">
+                         <label className="text-[8px] sm:text-[9px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest ml-4">Payment Method</label>
+                         <div className="grid grid-cols-2 gap-2">
+                            <button onClick={() => setPaymentMode(PaymentMode.CASH)} className={`py-3.5 sm:py-4 rounded-xl sm:rounded-2xl font-bold text-[9px] sm:text-[10px] uppercase tracking-widest transition-all ${paymentMode === PaymentMode.CASH ? 'bg-emerald-800 text-white shadow-lg' : 'bg-slate-50 dark:bg-zinc-800 text-slate-400 dark:text-zinc-500 border border-slate-100 dark:border-zinc-700'}`}>Cash</button>
+                            <button onClick={() => setPaymentMode(PaymentMode.CARD)} className={`py-3.5 sm:py-4 rounded-xl sm:rounded-2xl font-bold text-[9px] sm:text-[10px] uppercase tracking-widest transition-all ${paymentMode === PaymentMode.CARD ? 'bg-emerald-800 text-white shadow-lg' : 'bg-slate-50 dark:bg-zinc-800 text-slate-400 dark:text-zinc-500 border border-slate-100 dark:border-zinc-700'}`}>Card</button>
+                         </div>
+                      </div>
+                   </div>
+                   <Button onClick={handleExpenseSubmit} className="w-full py-5 rounded-2xl sm:rounded-[2rem] text-sm sm:text-base">Confirm Record</Button>
+                </div>
+             </div>
+          ) : scanStep === 'SUCCESS' ? (
+            <div className="text-center animate-in zoom-in-75 duration-300">
+              <div className="w-20 h-20 sm:w-24 sm:h-24 bg-emerald-500 rounded-full flex items-center justify-center mx-auto mb-6 shadow-[0_0_50px_rgba(16,185,129,0.5)]">
+                <CheckCircle2 size={40} sm-size={48} className="text-white" />
+              </div>
+              <p className="text-white text-2xl sm:text-3xl font-black uppercase tracking-tighter">Sync Complete</p>
+            </div>
+          ) : isProcessing ? (
+            <div className="flex flex-col items-center">
+              <div className="relative w-24 h-24 sm:w-32 sm:h-32 mb-8 sm:mb-10">
+                 <div className="absolute inset-0 border-4 border-emerald-500/20 rounded-full" />
+                 <div className="absolute inset-0 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+                 <div className="absolute inset-4 sm:inset-6 flex items-center justify-center">
+                    <Zap className="text-emerald-500 animate-pulse" size={32} />
+                 </div>
+              </div>
+              <p className="text-emerald-400 font-black uppercase tracking-[0.4em] text-[10px] sm:text-xs">Processing Turbo OCR</p>
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {/* Bottom Nav - Consistent Spacing */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-3xl border-t border-slate-100 dark:border-zinc-800 px-8 py-5 flex justify-around items-center rounded-t-[2.5rem] shadow-[0_-10px_40px_rgba(0,0,0,0.04)] z-[100] pb-8 transition-colors duration-300">
+         <button onClick={() => setActiveTab('WORK')} className={`flex flex-col items-center gap-1 transition-all duration-300 ${activeTab === 'WORK' ? 'text-emerald-900 dark:text-emerald-400 scale-110' : 'text-slate-300 dark:text-zinc-700'}`}>
+            <Briefcase size={22} />
+            <span className={`text-[8px] font-black uppercase tracking-[0.2em] ${activeTab === 'WORK' ? 'opacity-100' : 'opacity-40'}`}>Site</span>
+         </button>
+         <button onClick={() => setActiveTab('EXPENSES')} className={`flex flex-col items-center gap-1 transition-all duration-300 ${activeTab === 'EXPENSES' ? 'text-emerald-900 dark:text-emerald-400 scale-110' : 'text-slate-300 dark:text-zinc-700'}`}>
+            <Wallet size={22} />
+            <span className={`text-[8px] font-black uppercase tracking-[0.2em] ${activeTab === 'EXPENSES' ? 'opacity-100' : 'opacity-40'}`}>Wallet</span>
+         </button>
+      </div>
     </div>
   );
 };

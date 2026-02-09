@@ -16,13 +16,29 @@ export enum PaymentMode {
   CARD = 'CARD'
 }
 
+export interface AttendanceRecord {
+  id: string;
+  userId: string;
+  date: string; // YYYY-MM-DD
+  checkIn: string; // ISO string
+  checkOut?: string; // ISO string
+  lat?: number;
+  lng?: number;
+  totalHours: number;
+  overtimeHours: number;
+  status: 'PRESENT' | 'PENDING_APPROVAL' | 'APPROVED';
+}
+
 export interface User {
   id: string;
   name: string;
   role: UserRole;
   balance: number;
   avatar?: string;
-  password?: string; // Added password field
+  password?: string;
+  baseSalary: number; // Monthly base
+  otRate: number; // Multiplier or fixed rate per hour
+  activeShiftId?: string;
 }
 
 export interface LineItem {
@@ -52,6 +68,7 @@ export interface CompanyStats {
   totalEmployeeOwed: number;
   monthlySpend: number;
   pendingApprovals: number;
+  monthlyPayrollEstimate: number;
 }
 
 export interface OCRResult {

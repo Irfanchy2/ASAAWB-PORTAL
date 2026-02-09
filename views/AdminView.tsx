@@ -1,608 +1,622 @@
 
 import React, { useState, useMemo } from 'react';
 import { 
-  Users, 
-  DollarSign, 
-  Clock, 
-  BarChart3, 
-  CheckCircle2, 
-  XCircle, 
-  Download, 
-  Search,
-  Receipt,
-  Wallet,
-  Plus,
-  Filter,
-  ChevronDown,
-  ChevronUp,
-  CreditCard,
-  ChevronLeft,
-  ChevronRight,
-  ShieldAlert,
-  Key,
-  List,
-  FileSpreadsheet,
-  FileCode
+  Users, DollarSign, Clock, BarChart3, CheckCircle2, XCircle, 
+  Download, Search, Receipt, Wallet, Plus, Filter, 
+  ChevronDown, ChevronUp, CreditCard, ChevronLeft, ChevronRight, 
+  ShieldAlert, Key, List, FileSpreadsheet, FileCode, Edit3, 
+  CheckSquare, Square, AlertTriangle, Zap, Calendar, Briefcase, 
+  TrendingUp, MapPin, Printer, CreditCard as CardIcon, LayoutGrid, X,
+  Check, Trash2, ArrowUpCircle, Info, ExternalLink, Eye, ImageIcon, FileText,
+  UserPlus, Settings2, Menu, ChevronRight as ChevronRightIcon
 } from 'lucide-react';
 import { Card } from '../components/Card';
 import { Button } from '../components/Button';
-import { User, Transaction, TransactionStatus, CompanyStats, UserRole, PaymentMode } from '../types';
+import { User, Transaction, TransactionStatus, CompanyStats, UserRole, PaymentMode, AttendanceRecord } from '../types';
 import { CATEGORIES } from '../constants';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 interface AdminViewProps {
   users: User[];
   transactions: Transaction[];
+  attendance: AttendanceRecord[];
   stats: CompanyStats;
   onUpdateTransaction: (id: string, status: TransactionStatus) => void;
-  onTopUp: (userId: string, amount: number) => void;
-  onAddEmployee: (name: string, balance: number, pass: string) => void;
+  onUpdateAttendance: (id: string, status: AttendanceRecord['status']) => void;
+  onAddEmployee: (name: string, balance: number, pass: string, salary: number, otRate: number) => void;
+  onUpdateEmployee: (id: string, updates: Partial<User>) => void;
+  onViewAsEmployee: (user: User) => void;
 }
 
-export const AdminView: React.FC<AdminViewProps> = ({ users, transactions, stats, onUpdateTransaction, onTopUp, onAddEmployee }) => {
-  const [activeTab, setActiveTab] = useState<'DASHBOARD' | 'APPROVALS' | 'RECORDS' | 'EMPLOYEES'>('DASHBOARD');
+export const AdminView: React.FC<AdminViewProps> = ({ 
+  users, transactions, attendance, stats, 
+  onUpdateTransaction, onUpdateAttendance, onAddEmployee, onUpdateEmployee,
+  onViewAsEmployee
+}) => {
+  const [activeTab, setActiveTab] = useState<'DASHBOARD' | 'APPROVALS' | 'RECORDS' | 'EMPLOYEES' | 'PAYROLL'>('DASHBOARD');
   const [searchQuery, setSearchQuery] = useState('');
-  const [filterCategory, setFilterCategory] = useState<string>('All');
-  const [filterPaymentMode, setFilterPaymentMode] = useState<string>('All');
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [showReviewItems, setShowReviewItems] = useState(false);
-  const [expandedRecordItems, setExpandedRecordItems] = useState<Record<string, boolean>>({});
+  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
+  const [editingUser, setEditingUser] = useState<User | null>(null);
+  const [isAddingUser, setIsAddingUser] = useState(false);
+  const [viewingImage, setViewingImage] = useState<string | null>(null);
+  const [selectedTxIds, setSelectedTxIds] = useState<string[]>([]);
+  const [expandedTxIds, setExpandedTxIds] = useState<string[]>([]);
 
-  const [isAddingEmployee, setIsAddingEmployee] = useState(false);
-  const [newEmpName, setNewEmpName] = useState('');
-  const [newEmpBalance, setNewEmpBalance] = useState('0');
-  const [newEmpPass, setNewEmpPass] = useState('');
+  // Form states
+  const [formName, setFormName] = useState('');
+  const [formBalance, setFormBalance] = useState<number>(0);
+  const [formPassword, setFormPassword] = useState('');
+  const [formSalary, setFormSalary] = useState<number>(3000);
+  const [formOTRate, setFormOTRate] = useState<number>(20);
 
-  const pendingTransactions = transactions.filter(t => t.status === TransactionStatus.PENDING);
-  const archivedTransactions = transactions.filter(t => 
-    (t.status === TransactionStatus.APPROVED || t.status === TransactionStatus.REJECTED || t.status === TransactionStatus.COMPLETED) && t.type === 'EXPENSE'
+  const pendingTransactions = useMemo(() => 
+    transactions.filter(t => t.status === TransactionStatus.PENDING),
+    [transactions]
   );
-  
-  const filteredPendingTransactions = useMemo(() => {
-    return pendingTransactions.filter(t => 
-      filterCategory === 'All' || t.category === filterCategory
+
+  const filteredUsers = useMemo(() => {
+    return users.filter(u => 
+      u.role === UserRole.EMPLOYEE && 
+      u.name.toLowerCase().includes(searchQuery.toLowerCase())
     );
-  }, [pendingTransactions, filterCategory]);
+  }, [users, searchQuery]);
 
-  const currentApproval = filteredPendingTransactions[currentIndex];
+  const filteredRecords = useMemo(() => {
+    return transactions.filter(t => 
+      t.vendor.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      t.userName.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  }, [transactions, searchQuery]);
 
-  const filteredArchivedTransactions = useMemo(() => {
-    const query = searchQuery.toLowerCase();
-    return archivedTransactions.filter(t => {
-      const matchesCategoryFilter = filterCategory === 'All' || t.category === filterCategory;
-      const matchesSearch = 
-        t.userName.toLowerCase().includes(query) || 
-        t.vendor.toLowerCase().includes(query) ||
-        (t.items?.some(it => it.description.toLowerCase().includes(query)));
-      return matchesCategoryFilter && matchesSearch;
-    }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  }, [archivedTransactions, filterCategory, searchQuery]);
+  const payrollData = useMemo(() => {
+    return users.filter(u => u.role === UserRole.EMPLOYEE).map(u => {
+      const userAttendance = attendance.filter(a => a.userId === u.id && new Date(a.date).getMonth() === selectedMonth);
+      const otHours = userAttendance.reduce((sum, a) => sum + (a.overtimeHours || 0), 0);
+      const otPay = otHours * (u.otRate || 0);
+      
+      const reimbursements = transactions.filter(t => 
+        t.userId === u.id && 
+        t.status === TransactionStatus.APPROVED && 
+        t.type === 'EXPENSE' && 
+        t.paymentMode === PaymentMode.CARD &&
+        new Date(t.date).getMonth() === selectedMonth
+      ).reduce((sum, t) => sum + (t.amount || 0), 0);
 
-  const handleDecision = (id: string, status: TransactionStatus) => {
-    onUpdateTransaction(id, status);
-    setShowReviewItems(false);
-    if (currentIndex >= filteredPendingTransactions.length - 1 && currentIndex > 0) {
-      setCurrentIndex(currentIndex - 1);
+      const cashAdvances = transactions.filter(t => 
+        t.userId === u.id && 
+        t.type === 'TOPUP' && 
+        t.status === TransactionStatus.APPROVED &&
+        new Date(t.date).getMonth() === selectedMonth
+      ).reduce((sum, t) => sum + (t.amount || 0), 0);
+
+      const netPay = ((u.baseSalary || 0) + otPay + reimbursements) - cashAdvances;
+
+      return {
+        ...u,
+        otHours,
+        otPay,
+        reimbursements,
+        cashAdvances,
+        netPay: netPay < 0 ? 0 : netPay
+      };
+    });
+  }, [users, attendance, transactions, selectedMonth]);
+
+  const handleOpenAdd = () => {
+    setFormName('');
+    setFormBalance(0);
+    setFormPassword('');
+    setFormSalary(3000);
+    setFormOTRate(20);
+    setIsAddingUser(true);
+  };
+
+  const handleOpenEdit = (user: User) => {
+    setEditingUser(user);
+    setFormName(user.name);
+    setFormBalance(user.balance || 0);
+    setFormPassword(user.password || '');
+    setFormSalary(user.baseSalary || 0);
+    setFormOTRate(user.otRate || 0);
+  };
+
+  const handleSaveEdit = () => {
+    if (editingUser) {
+      onUpdateEmployee(editingUser.id, {
+        name: formName,
+        balance: formBalance,
+        password: formPassword,
+        baseSalary: formSalary,
+        otRate: formOTRate
+      });
+      setEditingUser(null);
     }
   };
 
-  const employees = users.filter(u => u.role === UserRole.EMPLOYEE);
-  const filteredEmployees = employees.filter(e => 
-    e.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
-  const handleAddSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newEmpName || !newEmpPass) return;
-    onAddEmployee(newEmpName, parseFloat(newEmpBalance) || 0, newEmpPass);
-    setIsAddingEmployee(false);
-    setNewEmpName('');
-    setNewEmpBalance('0');
-    setNewEmpPass('');
+  const handleAddUser = () => {
+    if (!formName.trim()) return;
+    onAddEmployee(formName, formBalance, formPassword, formSalary, formOTRate);
+    setIsAddingUser(false);
   };
 
-  const chartData = useMemo(() => {
-    return Array.from({ length: 7 }).map((_, i) => ({
-      name: `Day ${i + 1}`,
-      spend: Math.floor(Math.random() * 500) + 100,
-    }));
-  }, []);
-
-  const exportToExcel = () => {
-    // Basic CSV implementation for Excel compatibility
-    const headers = ['Date', 'Employee', 'Vendor', 'Category', 'Amount (AED)', 'Status', 'Payment Mode', 'Items Purchased'];
-    const rows = filteredArchivedTransactions.map(t => [
-      t.date,
-      t.userName,
-      t.vendor,
-      t.category || 'General',
-      t.amount.toFixed(2),
-      t.status,
-      t.paymentMode,
-      t.items?.map(i => `${i.description} (x${i.quantity})`).join('; ') || 'N/A'
-    ]);
-
-    const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `AlSaqr_Records_${new Date().toISOString().split('T')[0]}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+  const exportTallyPayroll = () => {
+    const headers = ['Employee Name', 'Base Salary', 'OT Pay', 'Reimbursements', 'Deductions', 'Net Pay'];
+    const rows = payrollData.map(p => [p.name, p.baseSalary, p.otPay, p.reimbursements, p.cashAdvances, p.netPay]);
+    const csvContent = "data:text/csv;charset=utf-8," + headers.join(",") + "\n" + rows.map(e => e.join(",")).join("\n");
+    const link = document.createElement("a");
+    link.setAttribute("href", encodeURI(csvContent));
+    link.setAttribute("download", `AlSaqr_Payroll_${selectedMonth + 1}.csv`);
+    link.click();
   };
 
-  const exportToTally = () => {
-    const approved = transactions.filter(t => t.status === TransactionStatus.APPROVED);
-    const xml = `<?xml version="1.0"?>
-<ENVELOPE>
-  <HEADER><TALLYREQUEST>Import Data</TALLYREQUEST></HEADER>
-  <BODY>
-    <IMPORTDATA>
-      <REQUESTDESC><REPORTNAME>Vouchers</REPORTNAME></REQUESTDESC>
-      <REQUESTDATA>
-        ${approved.map(t => `
-        <TALLYMESSAGE>
-          <VOUCHER VCHTYPE="Payment" ACTION="Create">
-            <DATE>${t.date.replace(/-/g, '')}</DATE>
-            <NARRATION>AL SAQR: ${t.vendor} spent by ${t.userName}. Items: ${t.items?.map(it => it.description).join(', ') || 'N/A'}</NARRATION>
-            <PARTYLEDGERNAME>${t.paymentMode === PaymentMode.CASH ? 'Cash' : 'Bank Account'}</PARTYLEDGERNAME>
-            <AMOUNT>${t.amount}</AMOUNT>
-          </VOUCHER>
-        </TALLYMESSAGE>`).join('')}
-      </REQUESTDATA>
-    </IMPORTDATA>
-  </BODY>
-</ENVELOPE>`;
-    const blob = new Blob([xml], { type: 'text/xml' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `AlSaqr_Tally_${new Date().toISOString().split('T')[0]}.xml`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  const toggleTxSelection = (id: string) => {
+    setSelectedTxIds(prev => prev.includes(id) ? prev.filter(txId => txId !== id) : [...prev, id]);
   };
 
-  const toggleRecordExpand = (id: string) => {
-    setExpandedRecordItems(prev => ({...prev, [id]: !prev[id]}));
+  const toggleTxExpansion = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setExpandedTxIds(prev => prev.includes(id) ? prev.filter(txId => txId !== id) : [...prev, id]);
+  };
+
+  const handleBulkAction = (status: TransactionStatus) => {
+    selectedTxIds.forEach(id => onUpdateTransaction(id, status));
+    setSelectedTxIds([]);
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedTxIds.length === pendingTransactions.length) {
+      setSelectedTxIds([]);
+    } else {
+      setSelectedTxIds(pendingTransactions.map(t => t.id));
+    }
   };
 
   return (
-    <div className="max-w-7xl mx-auto p-4 md:p-8 space-y-8">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-10 py-6 sm:py-10 space-y-6 sm:space-y-10 animate-in fade-in duration-700">
+      {/* Header & Tabs */}
+      <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-6">
         <div>
-          <h1 className="text-3xl font-black text-emerald-900 tracking-tighter uppercase">PORTAL HUB</h1>
-          <p className="text-slate-500 font-bold text-xs uppercase tracking-widest">AL SAQR WELDING & BLACKSMITH LLC</p>
+          <div className="flex items-center gap-3 mb-1">
+             <div className="w-8 h-8 bg-emerald-900 rounded-xl flex items-center justify-center text-white shrink-0">
+                <LayoutGrid size={18} />
+             </div>
+             <h1 className="text-2xl sm:text-3xl font-black text-emerald-950 dark:text-emerald-50 tracking-tighter uppercase">CONTROL HUB</h1>
+          </div>
+          <p className="text-slate-400 dark:text-zinc-500 font-bold text-[9px] sm:text-[10px] uppercase tracking-[0.2em] sm:tracking-[0.3em] ml-11">Enterprise Finance Engine v4.0</p>
         </div>
-        <div className="flex items-center gap-2 bg-slate-100 p-1.5 rounded-2xl overflow-x-auto scrollbar-hide">
-          {(['DASHBOARD', 'APPROVALS', 'RECORDS', 'EMPLOYEES'] as const).map(tab => (
-            <button
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              className={`px-4 py-2 rounded-xl text-xs font-black uppercase tracking-widest transition-all whitespace-nowrap ${activeTab === tab ? 'bg-white text-emerald-800 shadow-sm' : 'text-slate-400 hover:text-slate-800'}`}
+        
+        {/* Responsive Tab Switcher */}
+        <div className="w-full lg:w-auto flex gap-1 bg-white dark:bg-zinc-900 p-1 rounded-2xl border border-slate-200 dark:border-zinc-800 shadow-sm overflow-x-auto scrollbar-hide">
+          {(['DASHBOARD', 'APPROVALS', 'RECORDS', 'EMPLOYEES', 'PAYROLL'] as const).map(tab => (
+            <button 
+              key={tab} 
+              onClick={() => setActiveTab(tab)} 
+              className={`whitespace-nowrap px-4 sm:px-5 py-2 sm:py-2.5 rounded-xl text-[9px] sm:text-[10px] font-black uppercase tracking-widest transition-all duration-300 ${activeTab === tab ? 'bg-emerald-900 text-white shadow-md' : 'text-slate-400 dark:text-zinc-500 hover:text-emerald-900 dark:hover:text-emerald-400 hover:bg-slate-50 dark:hover:bg-zinc-800'}`}
             >
               {tab}
-              {tab === 'APPROVALS' && pendingTransactions.length > 0 && (
-                <span className="ml-2 bg-red-600 text-white text-[9px] px-1.5 py-0.5 rounded-full">{pendingTransactions.length}</span>
-              )}
             </button>
           ))}
         </div>
       </div>
 
       {activeTab === 'DASHBOARD' && (
-        <>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <Card className="bg-emerald-900 text-white border-none shadow-xl shadow-emerald-900/20">
-              <div className="flex justify-between items-start mb-4">
-                <div className="p-2 bg-white/10 rounded-xl"><DollarSign size={20} /></div>
-                <span className="text-[10px] font-black uppercase tracking-widest opacity-60">Company Cash Pool</span>
+        <div className="space-y-10">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+            <Card className="bg-gradient-to-br from-emerald-900 to-emerald-950 text-white border-none relative overflow-hidden p-6 sm:p-8">
+              <div className="absolute top-0 right-0 p-4 opacity-5 translate-x-4 -translate-y-4">
+                 <DollarSign size={100} />
               </div>
-              <h3 className="text-3xl font-black">{stats.totalCash.toLocaleString()} AED</h3>
-              <p className="text-emerald-200 text-[10px] font-bold mt-1 uppercase tracking-widest">Available Funds</p>
-            </Card>
-
-            <Card className="border-l-4 border-l-red-600">
-              <div className="flex justify-between items-start mb-4">
-                <div className="p-2 bg-amber-50 text-amber-600 rounded-xl"><Clock size={20} /></div>
-                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Claims Pending</span>
-              </div>
-              <h3 className="text-3xl font-black text-slate-800">{stats.totalEmployeeOwed.toLocaleString()} AED</h3>
-              <p className="text-slate-400 text-[10px] font-bold mt-1 uppercase tracking-widest">Needs Review</p>
-            </Card>
-
-            <Card>
-              <div className="flex justify-between items-start mb-4">
-                <div className="p-2 bg-emerald-50 text-emerald-800 rounded-xl"><BarChart3 size={20} /></div>
-                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Approved Spend</span>
-              </div>
-              <h3 className="text-3xl font-black text-slate-800">{stats.monthlySpend.toLocaleString()} AED</h3>
-              <p className="text-slate-400 text-[10px] font-bold mt-1 uppercase tracking-widest">Validated Total</p>
-            </Card>
-
-            <Card>
-              <div className="flex justify-between items-start mb-4">
-                <div className="p-2 bg-red-50 text-red-600 rounded-xl"><Receipt size={20} /></div>
-                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Total Records</span>
-              </div>
-              <h3 className="text-3xl font-black text-slate-800">{transactions.length}</h3>
-              <p className="text-slate-400 text-[10px] font-bold mt-1 uppercase tracking-widest">History Count</p>
-            </Card>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            <Card className="lg:col-span-2">
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="font-black text-emerald-900 uppercase text-xs tracking-widest">Daily Spend Velocity</h3>
-              </div>
-              <div className="h-[300px] w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <AreaChart data={chartData}>
-                    <defs>
-                      <linearGradient id="colorSpend" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#065f46" stopOpacity={0.2}/>
-                        <stop offset="95%" stopColor="#065f46" stopOpacity={0}/>
-                      </linearGradient>
-                    </defs>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                    <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10, fontWeight: 700}} dy={10} />
-                    <YAxis axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10, fontWeight: 700}} />
-                    <Tooltip contentStyle={{borderRadius: '16px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'}} />
-                    <Area type="monotone" dataKey="spend" stroke="#065f46" strokeWidth={4} fillOpacity={1} fill="url(#colorSpend)" />
-                  </AreaChart>
-                </ResponsiveContainer>
+              <div className="relative z-10">
+                 <div className="bg-white/10 w-10 h-10 rounded-xl flex items-center justify-center mb-6">
+                    <DollarSign size={20} className="text-emerald-300" />
+                 </div>
+                 <h3 className="text-2xl sm:text-3xl font-black tracking-tight mb-1">{stats.totalCash.toLocaleString()} <span className="text-xs sm:text-sm font-medium opacity-40">AED</span></h3>
+                 <p className="text-[9px] sm:text-[10px] uppercase font-bold text-emerald-300/60 tracking-[0.2em]">Liquid Assets</p>
               </div>
             </Card>
-
-            <Card>
-              <div className="flex justify-between items-center mb-6">
-                <h3 className="font-black text-emerald-900 uppercase text-xs tracking-widest">Live Queue</h3>
-              </div>
-              <div className="space-y-4">
-                {pendingTransactions.slice(0, 5).map(t => (
-                  <div key={t.id} className="flex items-center gap-3 p-4 rounded-3xl bg-slate-50 border border-transparent hover:border-emerald-100 transition-colors">
-                    <div className="w-10 h-10 bg-white rounded-xl shadow-sm flex items-center justify-center text-slate-400">
-                      <Receipt size={18} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-bold text-slate-800 truncate">{t.vendor}</p>
-                      <p className="text-[10px] text-slate-400 uppercase font-bold">{t.userName} • {t.amount} AED</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          </div>
-        </>
-      )}
-
-      {activeTab === 'APPROVALS' && (
-        <div className="space-y-6 max-w-4xl mx-auto">
-          <div className="flex justify-between items-center">
-            <div>
-              <h2 className="text-2xl font-black text-emerald-900 uppercase tracking-tighter">Review Feed</h2>
-              <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">AL SAQR INTERNAL VERIFICATION</p>
-            </div>
-            {filteredPendingTransactions.length > 0 && (
-              <div className="flex items-center gap-3">
-                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Record {currentIndex + 1} of {filteredPendingTransactions.length}</span>
-                <div className="flex gap-1">
-                   <button disabled={currentIndex === 0} onClick={() => { setCurrentIndex(prev => prev - 1); setShowReviewItems(false); }} className="p-2 bg-white border border-slate-200 rounded-lg shadow-sm disabled:opacity-30"><ChevronLeft size={18} /></button>
-                   <button disabled={currentIndex === filteredPendingTransactions.length - 1} onClick={() => { setCurrentIndex(prev => prev + 1); setShowReviewItems(false); }} className="p-2 bg-white border border-slate-200 rounded-lg shadow-sm disabled:opacity-30"><ChevronRight size={18} /></button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {currentApproval ? (
-            <div className="animate-in fade-in slide-in-from-bottom-4 duration-300">
-              <Card className="p-0 overflow-hidden flex flex-col md:flex-row min-h-[520px] shadow-2xl border-emerald-100 ring-8 ring-emerald-50/20">
-                <div className="md:w-3/5 bg-slate-100 flex items-center justify-center p-6 border-r border-slate-200">
-                  {currentApproval.receiptUrl ? (
-                    <img src={currentApproval.receiptUrl} alt="Receipt" className="max-h-full max-w-full rounded shadow-xl object-contain border-4 border-white" />
-                  ) : (
-                    <div className="text-slate-300 flex flex-col items-center">
-                      <Receipt size={80} className="mb-4 opacity-20" />
-                      <p className="text-[10px] font-black uppercase tracking-[0.2em] opacity-40">Verification Manual</p>
-                    </div>
-                  )}
-                </div>
-
-                <div className="md:w-2/5 p-8 flex flex-col bg-white overflow-y-auto max-h-[700px] scrollbar-hide">
-                  <div className="space-y-6 flex-1">
-                    <div>
-                      <span className="text-[10px] font-black text-emerald-800 uppercase tracking-widest bg-emerald-50 px-3 py-1 rounded-full mb-3 inline-block">
-                        {currentApproval.category || 'General'}
-                      </span>
-                      <h3 className="text-2xl font-black text-emerald-900 uppercase tracking-tighter">{currentApproval.vendor}</h3>
-                      <p className="text-slate-400 font-bold text-xs uppercase tracking-widest">{new Date(currentApproval.date).toLocaleDateString(undefined, { dateStyle: 'full' })}</p>
-                    </div>
-
-                    <div className="bg-slate-50 p-6 rounded-3xl space-y-4 border border-slate-100">
-                       <div className="flex justify-between items-center pb-3 border-b border-slate-200/50">
-                          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Employee</span>
-                          <span className="text-sm font-black text-emerald-900">{currentApproval.userName}</span>
-                       </div>
-                       <div className="flex justify-between items-center pb-3 border-b border-slate-200/50">
-                          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Total Value</span>
-                          <span className="text-xl font-black text-emerald-800">{currentApproval.amount.toFixed(2)} AED</span>
-                       </div>
-                       <div className="flex justify-between items-center pb-3 border-b border-slate-200/50">
-                          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Payment Mode</span>
-                          <span className="text-xs font-black text-red-700 uppercase tracking-widest bg-red-50 px-2 py-1 rounded">
-                            {currentApproval.paymentMode} {currentApproval.cardLast4 && `(••••${currentApproval.cardLast4})`}
-                          </span>
-                       </div>
-
-                       {currentApproval.items && currentApproval.items.length > 0 && (
-                         <div className="pt-2">
-                            <button 
-                              onClick={() => setShowReviewItems(!showReviewItems)}
-                              className="flex items-center justify-between w-full text-[10px] font-black text-emerald-700 uppercase tracking-widest hover:text-emerald-900 transition-colors"
-                            >
-                              <div className="flex items-center gap-2">
-                                <List size={14} />
-                                <span>Items ({currentApproval.items.length})</span>
-                              </div>
-                              {showReviewItems ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                            </button>
-                            
-                            {showReviewItems && (
-                              <div className="mt-4 space-y-3 animate-in slide-in-from-top-1 duration-200 max-h-64 overflow-y-auto pr-2 scrollbar-hide">
-                                {currentApproval.items.map((item, idx) => (
-                                  <div key={idx} className="flex flex-col gap-1 p-3 bg-white rounded-2xl border border-slate-200/50">
-                                    <span className="text-xs font-black text-emerald-950 uppercase tracking-tight leading-tight">{item.description}</span>
-                                    <div className="flex justify-between items-end">
-                                      <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest">Qty: {item.quantity} × {item.price.toFixed(2)}</span>
-                                      <span className="text-xs font-black text-emerald-800">{(item.quantity * item.price).toFixed(2)} AED</span>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                         </div>
-                       )}
-                    </div>
-                  </div>
-
-                  <div className="flex gap-4 pt-8 sticky bottom-0 bg-white">
-                    <Button variant="danger" className="flex-1 py-5 text-xs font-black uppercase tracking-widest shadow-xl shadow-red-100" onClick={() => handleDecision(currentApproval.id, TransactionStatus.REJECTED)}>Reject</Button>
-                    <Button variant="success" className="flex-1 py-5 text-xs font-black uppercase tracking-widest shadow-xl shadow-emerald-100" onClick={() => handleDecision(currentApproval.id, TransactionStatus.APPROVED)}>Authorize</Button>
-                  </div>
-                </div>
-              </Card>
-            </div>
-          ) : (
-            <div className="py-32 text-center bg-white rounded-[48px] border-4 border-dashed border-emerald-50">
-               <div className="w-20 h-20 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-6">
-                 <CheckCircle2 size={40} />
+            <Card className="border-none shadow-xl group hover:border-red-100 dark:hover:border-red-900/30 border border-transparent p-6 sm:p-8">
+               <div className="bg-red-50 dark:bg-red-950/20 w-10 h-10 rounded-xl flex items-center justify-center mb-6 text-red-600 group-hover:bg-red-600 group-hover:text-white transition-all">
+                  <Clock size={20} />
                </div>
-               <h3 className="text-xl font-black text-emerald-900 uppercase tracking-widest tracking-tighter">Review Clear</h3>
-               <p className="text-slate-400 text-[10px] font-black uppercase mt-2 tracking-widest">All current claims have been processed.</p>
-            </div>
-          )}
+               <h3 className="text-2xl sm:text-3xl font-black tracking-tight text-emerald-950 dark:text-emerald-50 mb-1">{stats.pendingApprovals}</h3>
+               <p className="text-[9px] sm:text-[10px] uppercase font-bold text-slate-400 dark:text-zinc-500 tracking-[0.2em]">Awaiting Verification</p>
+            </Card>
+            <Card className="border-none shadow-xl p-6 sm:p-8">
+               <div className="bg-emerald-50 dark:bg-emerald-950/20 w-10 h-10 rounded-xl flex items-center justify-center mb-6 text-emerald-700 dark:text-emerald-400">
+                  <Briefcase size={20} />
+               </div>
+               <h3 className="text-2xl sm:text-3xl font-black tracking-tight text-emerald-950 dark:text-emerald-50 mb-1">{stats.monthlyPayrollEstimate.toLocaleString()} <span className="text-xs sm:text-sm font-medium opacity-40">AED</span></h3>
+               <p className="text-[9px] sm:text-[10px] uppercase font-bold text-slate-400 dark:text-zinc-500 tracking-[0.2em]">Payroll Liability</p>
+            </Card>
+            <Card className="border-none shadow-xl p-6 sm:p-8">
+               <div className="bg-slate-50 dark:bg-zinc-800 w-10 h-10 rounded-xl flex items-center justify-center mb-6 text-slate-600 dark:text-zinc-400">
+                  <Users size={20} />
+               </div>
+               <h3 className="text-2xl sm:text-3xl font-black tracking-tight text-emerald-950 dark:text-emerald-50 mb-1">{users.length - 1}</h3>
+               <p className="text-[9px] sm:text-[10px] uppercase font-bold text-slate-400 dark:text-zinc-500 tracking-[0.2em]">Personnel Count</p>
+            </Card>
+          </div>
         </div>
       )}
 
       {activeTab === 'RECORDS' && (
-        <div className="space-y-6">
-          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
-            <div>
-              <h2 className="text-2xl font-black text-emerald-900 uppercase tracking-tighter">System Records</h2>
-              <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Comprehensive Purchase Audit</p>
-            </div>
-            <div className="flex flex-col md:flex-row items-center gap-3 w-full md:w-auto">
-              <div className="relative w-full md:w-80">
-                <Search size={16} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+        <div className="space-y-6 sm:space-y-8 animate-in slide-in-from-bottom-4 duration-500 pb-20">
+           <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
+              <div>
+                <h2 className="text-2xl sm:text-3xl font-black text-emerald-950 dark:text-emerald-50 tracking-tighter uppercase">Global Ledger</h2>
+                <p className="text-slate-400 dark:text-zinc-500 text-[9px] sm:text-[10px] font-black uppercase tracking-[0.2em] sm:tracking-[0.3em] mt-1">Transaction History & Verification</p>
+              </div>
+              <div className="relative w-full md:w-80 lg:w-96">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-zinc-500" size={16} />
                 <input 
-                  type="text" placeholder="Search employee, vendor or items..." value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  className="w-full bg-white border border-slate-200 rounded-2xl text-[10px] font-black uppercase pl-12 pr-4 py-4 focus:ring-4 focus:ring-emerald-500/10 outline-none"
+                  type="text" 
+                  placeholder="Search vendor or employee..." 
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-11 pr-6 py-3.5 sm:py-4 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl font-bold focus:border-emerald-500 outline-none shadow-sm transition-all text-sm text-emerald-950 dark:text-emerald-50"
                 />
               </div>
-              <div className="flex gap-2 w-full md:w-auto">
-                <Button onClick={exportToExcel} variant="secondary" className="flex-1 md:w-auto text-[9px] font-black uppercase tracking-widest py-4 px-6 bg-emerald-50 text-emerald-700 hover:bg-emerald-100">
-                  <FileSpreadsheet size={16} /> Excel CSV
-                </Button>
-                <Button onClick={exportToTally} variant="secondary" className="flex-1 md:w-auto text-[9px] font-black uppercase tracking-widest py-4 px-6 bg-slate-50 text-slate-700 hover:bg-slate-200">
-                  <FileCode size={16} /> Tally XML
-                </Button>
-              </div>
-            </div>
-          </div>
+           </div>
 
-          <Card className="p-0 overflow-hidden shadow-2xl border-slate-100 rounded-[32px]">
-            <div className="overflow-x-auto scrollbar-hide">
-              <table className="w-full text-left">
-                <thead className="bg-slate-50/50 border-b border-slate-100">
-                  <tr>
-                    <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Employee</th>
-                    <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Vendor / Items</th>
-                    <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Category</th>
-                    <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Status</th>
-                    <th className="px-8 py-6 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] text-right">Amount (AED)</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {filteredArchivedTransactions.length === 0 ? (
+           <Card className="p-0 overflow-hidden shadow-2xl border-none bg-white dark:bg-zinc-900 rounded-[1.5rem] sm:rounded-[2rem]">
+              <div className="overflow-x-auto scrollbar-hide">
+                <table className="w-full text-left min-w-[700px]">
+                  <thead className="bg-slate-50 dark:bg-zinc-800/50 border-b border-slate-100 dark:border-zinc-800">
                     <tr>
-                      <td colSpan={5} className="py-20 text-center">
-                        <Receipt size={40} className="mx-auto text-slate-200 mb-4" />
-                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">No matching records found</p>
-                      </td>
+                      <th className="px-6 sm:px-8 py-5 sm:py-6 text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest">Type</th>
+                      <th className="px-6 sm:px-8 py-5 sm:py-6 text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest">Transaction Info</th>
+                      <th className="px-6 sm:px-8 py-5 sm:py-6 text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest">Receipt</th>
+                      <th className="px-6 sm:px-8 py-5 sm:py-6 text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest">Amount</th>
+                      <th className="px-6 sm:px-8 py-5 sm:py-6 text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest">Status</th>
                     </tr>
-                  ) : filteredArchivedTransactions.map(t => (
-                    <React.Fragment key={t.id}>
-                      <tr className="hover:bg-slate-50/50 transition-colors group cursor-pointer" onClick={() => toggleRecordExpand(t.id)}>
-                        <td className="px-8 py-6">
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center font-black text-emerald-800 text-[10px] border-2 border-white shadow-sm overflow-hidden shrink-0">
-                               {users.find(u => u.id === t.userId)?.avatar ? (
-                                 <img src={users.find(u => u.id === t.userId)?.avatar} className="w-full h-full object-cover" alt={t.userName} />
-                               ) : t.userName.charAt(0).toUpperCase()}
-                            </div>
-                            <div>
-                              <p className="text-sm font-black text-emerald-950 uppercase tracking-tighter">{t.userName}</p>
-                              <p className="text-[9px] font-bold text-slate-400 uppercase">{t.date}</p>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-8 py-6">
-                           <div>
-                             <p className="text-sm font-black text-emerald-900 uppercase tracking-tight">{t.vendor}</p>
-                             <div className="flex items-center gap-1.5 mt-1">
-                               <p className="text-[9px] font-bold text-slate-400 uppercase">{t.items?.length || 0} items purchased</p>
-                               {t.items && t.items.length > 0 && (
-                                 <span className="text-[8px] p-0.5 bg-slate-100 rounded text-slate-500"><ChevronDown size={10} className={expandedRecordItems[t.id] ? 'rotate-180 transition-transform' : 'transition-transform'} /></span>
-                               )}
-                             </div>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50 dark:divide-zinc-800">
+                    {filteredRecords.map(t => (
+                      <tr key={t.id} className="hover:bg-slate-50/50 dark:hover:bg-zinc-800/30 transition-colors">
+                        <td className="px-6 sm:px-8 py-5 sm:py-6">
+                           <div className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl flex items-center justify-center shrink-0 ${t.type === 'TOPUP' ? 'bg-emerald-100 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400' : 'bg-slate-100 dark:bg-zinc-800 text-slate-400 dark:text-zinc-500'}`}>
+                              {t.type === 'TOPUP' ? <ArrowUpCircle size={18} /> : <Receipt size={18} />}
                            </div>
                         </td>
-                        <td className="px-8 py-6">
-                           <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest bg-slate-100 px-2 py-1 rounded">{t.category || 'General'}</span>
+                        <td className="px-6 sm:px-8 py-5 sm:py-6">
+                          <div className="min-w-[150px]">
+                            <p className="font-black text-emerald-950 dark:text-emerald-50 uppercase tracking-tight text-sm">{t.vendor}</p>
+                            <p className="text-[9px] sm:text-[10px] font-bold text-slate-400 dark:text-zinc-500 uppercase tracking-widest">{t.userName} • {t.date}</p>
+                          </div>
                         </td>
-                        <td className="px-8 py-6">
-                           <span className={`text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded ${
-                             t.status === TransactionStatus.APPROVED ? 'bg-emerald-50 text-emerald-700' :
-                             t.status === TransactionStatus.REJECTED ? 'bg-red-50 text-red-700' :
-                             'bg-slate-50 text-slate-500'
-                           }`}>{t.status}</span>
+                        <td className="px-6 sm:px-8 py-5 sm:py-6">
+                           {t.receiptUrl ? (
+                             <div 
+                                onClick={() => setViewingImage(t.receiptUrl!)}
+                                className="relative w-12 h-12 sm:w-16 sm:h-16 rounded-xl overflow-hidden border border-slate-200 dark:border-zinc-800 shadow-sm cursor-pointer group"
+                             >
+                                <img src={t.receiptUrl} className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-all" alt="receipt" />
+                                <div className="absolute inset-0 bg-emerald-900/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-all">
+                                   <Eye size={16} className="text-white" />
+                                </div>
+                             </div>
+                           ) : (
+                             <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-xl bg-slate-50 dark:bg-zinc-800 border border-slate-100 dark:border-zinc-800 flex items-center justify-center text-slate-200 dark:text-zinc-700">
+                                <ImageIcon size={20} />
+                             </div>
+                           )}
                         </td>
-                        <td className="px-8 py-6 text-right font-black text-emerald-900 text-base">
-                           {t.amount.toFixed(2)}
+                        <td className="px-6 sm:px-8 py-5 sm:py-6">
+                           <p className="font-black text-emerald-950 dark:text-emerald-50 text-base sm:text-lg tabular-nums whitespace-nowrap">
+                              {t.amount.toLocaleString()}
+                              <span className="text-[9px] sm:text-[10px] font-medium opacity-30 ml-1">AED</span>
+                           </p>
+                        </td>
+                        <td className="px-6 sm:px-8 py-5 sm:py-6">
+                           <span className={`px-2.5 py-1 rounded-full text-[7px] sm:text-[8px] font-black uppercase tracking-widest inline-block whitespace-nowrap ${
+                             t.status === TransactionStatus.APPROVED ? 'bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400' :
+                             t.status === TransactionStatus.REJECTED ? 'bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-400' :
+                             'bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400'
+                           }`}>
+                             {t.status}
+                           </span>
                         </td>
                       </tr>
-                      {expandedRecordItems[t.id] && t.items && t.items.length > 0 && (
-                        <tr className="bg-slate-50/30">
-                          <td colSpan={5} className="px-8 py-4">
-                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3 animate-in fade-in slide-in-from-top-2">
-                               {t.items.map((item, idx) => (
-                                 <div key={idx} className="bg-white border border-slate-100 rounded-2xl p-4 flex justify-between items-center shadow-sm">
-                                   <div>
-                                     <p className="text-[10px] font-black text-emerald-950 uppercase tracking-tight">{item.description}</p>
-                                     <p className="text-[9px] font-bold text-slate-400 uppercase mt-0.5">{item.quantity} x {item.price.toFixed(2)} AED</p>
-                                   </div>
-                                   <p className="text-xs font-black text-emerald-800">{(item.quantity * item.price).toFixed(2)}</p>
-                                 </div>
-                               ))}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Card>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+           </Card>
         </div>
       )}
 
       {activeTab === 'EMPLOYEES' && (
-        <div className="space-y-6">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div>
-              <h2 className="text-2xl font-black text-emerald-900 uppercase tracking-tighter">EMPLOYEE LEDGER</h2>
-              <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">DIGITAL WALLET & CREDENTIAL MANAGEMENT</p>
-            </div>
-            <div className="flex gap-4">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                <input 
-                  type="text" placeholder="Filter team..." value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  className="pl-10 pr-4 py-3 bg-white border border-slate-200 rounded-2xl text-[10px] font-black uppercase focus:ring-4 focus:ring-emerald-500/10 w-full md:w-56 shadow-sm outline-none"
-                />
+        <div className="space-y-6 sm:space-y-8 animate-in slide-in-from-bottom-4 duration-500">
+           <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
+              <div>
+                <h2 className="text-2xl sm:text-3xl font-black text-emerald-950 dark:text-emerald-50 tracking-tighter uppercase">Personnel Directory</h2>
+                <p className="text-slate-400 dark:text-zinc-500 text-[9px] sm:text-[10px] font-black uppercase tracking-[0.2em] sm:tracking-[0.3em] mt-1">Managed Workforce Records</p>
               </div>
-              <Button onClick={() => setIsAddingEmployee(true)} className="bg-emerald-800 text-white rounded-2xl px-6 font-black uppercase tracking-widest text-[10px] shadow-lg shadow-emerald-900/10">
-                <Plus size={16} /> Add Employee
-              </Button>
-            </div>
-          </div>
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 w-full md:w-auto">
+                 <div className="relative flex-1 sm:w-64">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-zinc-500" size={16} />
+                    <input 
+                      type="text" 
+                      placeholder="Search credentials..." 
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full pl-11 pr-6 py-3 sm:py-3.5 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl text-xs sm:text-sm font-medium focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none transition-all text-emerald-950 dark:text-emerald-50"
+                    />
+                 </div>
+                 <Button onClick={handleOpenAdd} className="h-11 sm:h-12 px-6">
+                    <Plus size={16} /> Deploy New Staff
+                 </Button>
+              </div>
+           </div>
 
-          <Card className="p-0 overflow-hidden shadow-2xl border-slate-100 rounded-[32px]">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left">
-                <thead className="bg-slate-50 border-b border-slate-100">
-                  <tr>
-                    <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Profile</th>
-                    <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Wallet Bal</th>
-                    <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Portal Key (Password)</th>
-                    <th className="px-8 py-5 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] text-right">Fund Allocation</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-sm">
-                  {filteredEmployees.map(e => (
-                    <tr key={e.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="px-8 py-5">
-                        <div className="flex items-center gap-4">
-                          <img src={e.avatar} className="w-10 h-10 rounded-2xl border-2 border-white shadow-sm" alt={e.name} />
-                          <span className="font-black text-emerald-900 uppercase text-sm tracking-tighter">{e.name}</span>
-                        </div>
-                      </td>
-                      <td className="px-8 py-5 font-black text-emerald-700 text-base">
-                        {e.balance.toFixed(2)} <span className="text-[10px] text-slate-400">AED</span>
-                      </td>
-                      <td className="px-8 py-5">
-                         <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-xl w-fit">
-                            <Key size={14} className="text-slate-400" />
-                            <span className="text-[10px] font-mono font-bold text-slate-500">{e.password}</span>
-                         </div>
-                      </td>
-                      <td className="px-8 py-5 text-right">
-                        <div className="flex gap-2 justify-end">
-                           <Button variant="ghost" className="text-[10px] font-black uppercase px-4 hover:bg-emerald-50 hover:text-emerald-700" onClick={() => onTopUp(e.id, 500)}>+500</Button>
-                           <Button variant="ghost" className="text-[10px] font-black uppercase px-4 hover:bg-emerald-50 hover:text-emerald-700" onClick={() => onTopUp(e.id, 1000)}>+1000</Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </Card>
+           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+              {filteredUsers.map(u => (
+                <Card key={u.id} className="p-6 sm:p-8 border-none shadow-xl group hover:border-emerald-100 dark:hover:border-emerald-900/40 border transition-all relative rounded-[1.5rem] sm:rounded-[2rem]">
+                   <div className="flex items-center gap-4 sm:gap-5 mb-6 sm:mb-8">
+                      <div className="relative shrink-0">
+                         <img src={u.avatar} className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl shadow-md grayscale group-hover:grayscale-0 transition-all" alt={u.name} />
+                         <div className={`absolute -bottom-1 -right-1 w-3.5 h-3.5 sm:w-4 sm:h-4 rounded-full border-2 border-white dark:border-zinc-900 ${u.activeShiftId ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300 dark:bg-zinc-700'}`} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                         <h4 className="text-lg sm:text-xl font-black text-emerald-950 dark:text-emerald-50 uppercase tracking-tight truncate">{u.name}</h4>
+                         <p className="text-[9px] sm:text-[10px] font-bold text-slate-400 dark:text-zinc-500 uppercase tracking-widest truncate">{u.role} • 0x{u.id}</p>
+                      </div>
+                      <button 
+                        onClick={() => onViewAsEmployee(u)}
+                        className="p-2.5 sm:p-3 bg-slate-50 dark:bg-zinc-800 text-slate-400 dark:text-zinc-500 hover:text-emerald-700 dark:hover:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/20 rounded-xl transition-all"
+                        title="Open Employee Portal"
+                      >
+                         <ExternalLink size={18} />
+                      </button>
+                   </div>
+
+                   <div className="grid grid-cols-2 gap-3 sm:gap-4 mb-6 sm:mb-8">
+                      <div className="bg-slate-50 dark:bg-zinc-800 p-3 sm:p-4 rounded-2xl">
+                         <p className="text-[8px] sm:text-[9px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest mb-1">Wallet</p>
+                         <p className="text-base sm:text-lg font-black text-emerald-950 dark:text-emerald-50 tabular-nums">{(u.balance || 0).toFixed(2)}</p>
+                      </div>
+                      <div className="bg-slate-50 dark:bg-zinc-800 p-3 sm:p-4 rounded-2xl">
+                         <p className="text-[8px] sm:text-[9px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest mb-1">Base</p>
+                         <p className="text-base sm:text-lg font-black text-emerald-950 dark:text-emerald-50 tabular-nums">{(u.baseSalary || 0).toLocaleString()}</p>
+                      </div>
+                   </div>
+
+                   <button 
+                    onClick={() => handleOpenEdit(u)}
+                    className="w-full flex items-center justify-center gap-2 py-3.5 sm:py-4 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 rounded-2xl text-[9px] sm:text-[10px] font-black uppercase tracking-widest hover:bg-emerald-100 dark:hover:bg-emerald-900/30 transition-all active:scale-[0.98]"
+                   >
+                      <Edit3 size={16} /> Edit Profile
+                   </button>
+                </Card>
+              ))}
+           </div>
         </div>
       )}
 
-      {isAddingEmployee && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-           <div className="absolute inset-0 bg-emerald-950/40 backdrop-blur-md" onClick={() => setIsAddingEmployee(false)}></div>
-           <div className="bg-white w-full max-w-md rounded-[48px] shadow-2xl relative z-10 overflow-hidden border border-emerald-100 animate-in zoom-in-95 duration-200">
-             <div className="p-10 space-y-8">
-                <div className="text-center">
-                  <div className="w-16 h-16 bg-emerald-50 text-emerald-800 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <Users size={32} />
-                  </div>
-                  <h2 className="text-2xl font-black text-emerald-900 uppercase tracking-tighter">NEW EMPLOYEE</h2>
-                  <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mt-1">Portal Access Provisioning</p>
-                </div>
-
-                <form onSubmit={handleAddSubmit} className="space-y-5">
-                  <div>
-                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-1">Full Name</label>
-                    <input type="text" required value={newEmpName} onChange={e => setNewEmpName(e.target.value)} placeholder="Full Name" className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:border-emerald-700 transition-all font-bold text-slate-800 outline-none" />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-1">Initial Balance (AED)</label>
-                    <input type="number" required value={newEmpBalance} onChange={e => setNewEmpBalance(e.target.value)} className="w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-black text-emerald-900 outline-none" />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 ml-1">Set Portal Password</label>
-                    <div className="relative">
-                      <Key className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                      <input type="text" required value={newEmpPass} onChange={e => setNewEmpPass(e.target.value)} placeholder="Portal Password" className="w-full pl-12 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-slate-800 outline-none" />
-                    </div>
-                  </div>
-                  <div className="pt-4 flex gap-4">
-                    <button type="button" onClick={() => setIsAddingEmployee(false)} className="flex-1 py-4 bg-slate-100 text-slate-600 rounded-2xl font-black uppercase tracking-widest text-[10px]">Cancel</button>
-                    <button type="submit" className="flex-1 py-4 bg-emerald-800 text-white rounded-2xl font-black uppercase tracking-widest text-[10px] shadow-xl shadow-emerald-900/20 active:scale-95">Confirm Provision</button>
-                  </div>
-                </form>
-             </div>
-             <div className="bg-red-50 p-4 border-t border-red-100 flex items-center gap-3">
-               <ShieldAlert className="text-red-700 shrink-0" size={18} />
-               <p className="text-[10px] font-bold text-red-800 uppercase tracking-tight">Access credentials should be kept confidential.</p>
-             </div>
+      {activeTab === 'PAYROLL' && (
+        <div className="space-y-6 sm:space-y-8 animate-in slide-in-from-bottom-4 duration-500 pb-20">
+           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-6">
+              <div>
+                <h2 className="text-2xl sm:text-3xl font-black text-emerald-950 dark:text-emerald-50 tracking-tighter uppercase">Payroll Ledger</h2>
+                <p className="text-slate-400 dark:text-zinc-500 text-[9px] sm:text-[10px] font-black uppercase tracking-[0.2em] sm:tracking-[0.3em] mt-1">Verification Phase 3/3</p>
+              </div>
+              <div className="flex gap-2 sm:gap-3 w-full sm:w-auto">
+                 <button 
+                  onClick={() => window.print()}
+                  className="flex-1 sm:flex-none px-4 sm:px-6 h-11 sm:h-12 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-2xl text-[9px] sm:text-[10px] font-bold uppercase tracking-widest text-slate-600 dark:text-zinc-400 flex items-center justify-center gap-2 hover:bg-slate-50 dark:hover:bg-zinc-800 transition-all shadow-sm"
+                 >
+                    <Printer size={16} /> Print
+                 </button>
+                 <Button onClick={exportTallyPayroll} className="flex-1 sm:flex-none h-11 sm:h-12 px-6 sm:px-8">
+                    <FileCode size={16} /> Export
+                 </Button>
+              </div>
            </div>
+
+           <Card className="p-0 overflow-hidden shadow-2xl border-none rounded-[1.5rem] sm:rounded-[2.5rem] bg-white dark:bg-zinc-900">
+              <div className="overflow-x-auto scrollbar-hide">
+                <table className="w-full text-left min-w-[800px]">
+                   <thead className="bg-slate-50 dark:bg-zinc-800/50 border-b border-slate-100 dark:border-zinc-800">
+                      <tr>
+                         <th className="px-6 sm:px-10 py-6 sm:py-8 text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest">Member</th>
+                         <th className="px-6 sm:px-10 py-6 sm:py-8 text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest">Base Rate</th>
+                         <th className="px-6 sm:px-10 py-6 sm:py-8 text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest">OT Comp</th>
+                         <th className="px-6 sm:px-10 py-6 sm:py-8 text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest">Refunds</th>
+                         <th className="px-6 sm:px-10 py-6 sm:py-8 text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest">Deductions</th>
+                         <th className="px-6 sm:px-10 py-6 sm:py-8 text-[10px] font-black text-emerald-950 dark:text-emerald-50 uppercase tracking-[0.2em] text-right">Net Liquidation</th>
+                      </tr>
+                   </thead>
+                   <tbody className="divide-y divide-slate-50 dark:divide-zinc-800">
+                      {payrollData.length === 0 ? (
+                        <tr><td colSpan={6} className="py-20 text-center text-slate-400 dark:text-zinc-600 font-black uppercase tracking-widest">No Active Records</td></tr>
+                      ) : payrollData.map(p => (
+                        <tr key={p.id} className="hover:bg-emerald-50/30 dark:hover:bg-emerald-950/10 transition-colors group">
+                          <td className="px-6 sm:px-10 py-5 sm:py-6">
+                             <div className="flex items-center gap-3 sm:gap-4 min-w-[150px]">
+                                <img src={p.avatar} className="w-10 h-10 sm:w-12 sm:h-12 rounded-2xl grayscale group-hover:grayscale-0 transition-all shrink-0" alt={p.name} />
+                                <span className="font-black text-emerald-950 dark:text-emerald-50 uppercase tracking-tight text-sm">{p.name}</span>
+                             </div>
+                          </td>
+                          <td className="px-6 sm:px-10 py-5 sm:py-6 font-bold text-slate-500 dark:text-zinc-500 tabular-nums">{p.baseSalary.toLocaleString()}</td>
+                          <td className="px-6 sm:px-10 py-5 sm:py-6">
+                             <div className="flex flex-col">
+                                <span className="font-bold text-emerald-700 dark:text-emerald-400">+{p.otPay.toLocaleString()}</span>
+                                <span className="text-[8px] sm:text-[9px] opacity-40 font-black uppercase">{p.otHours.toFixed(1)}H Logged</span>
+                             </div>
+                          </td>
+                          <td className="px-6 sm:px-10 py-5 sm:py-6 font-bold text-emerald-700 dark:text-emerald-400">+{p.reimbursements.toLocaleString()}</td>
+                          <td className="px-6 sm:px-10 py-5 sm:py-6 font-bold text-red-500 dark:text-red-400">-{p.cashAdvances.toLocaleString()}</td>
+                          <td className="px-6 sm:px-10 py-5 sm:py-6 text-right">
+                             <span className="text-lg sm:text-xl font-black text-emerald-950 dark:text-emerald-50 tracking-tighter tabular-nums">{p.netPay.toLocaleString()} <span className="text-[9px] sm:text-[10px] font-medium opacity-30">AED</span></span>
+                          </td>
+                        </tr>
+                      ))}
+                   </tbody>
+                </table>
+              </div>
+           </Card>
+        </div>
+      )}
+
+      {activeTab === 'APPROVALS' && (
+        <div className="space-y-6 sm:space-y-8 animate-in slide-in-from-bottom-4 duration-500 pb-32 px-1">
+           <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+             <div>
+                <h2 className="text-2xl sm:text-3xl font-black text-emerald-950 dark:text-emerald-50 uppercase tracking-tighter">FINANCE VERIFICATION</h2>
+                <div className="flex items-center gap-3 sm:gap-4 mt-2">
+                    <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 dark:bg-amber-950/20 rounded-lg border border-amber-100 dark:border-amber-900/30">
+                        <AlertTriangle size={14} className="text-amber-600 dark:text-amber-400" />
+                        <span className="text-[9px] font-black text-amber-600 dark:text-amber-400 uppercase tracking-widest">Audit Required • {pendingTransactions.length}</span>
+                    </div>
+                </div>
+             </div>
+             {pendingTransactions.length > 0 && (
+                <button onClick={toggleSelectAll} className="w-full sm:w-auto px-4 py-2.5 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-xl text-[9px] sm:text-[10px] font-black uppercase tracking-widest text-slate-500 dark:text-zinc-400 flex items-center justify-center gap-2 hover:bg-slate-50 dark:hover:bg-zinc-800 transition-all shadow-sm">
+                   {selectedTxIds.length === pendingTransactions.length ? <CheckSquare size={16} className="text-emerald-600" /> : <Square size={16} />}
+                   {selectedTxIds.length === pendingTransactions.length ? 'Clear Selection' : 'Select All Pending'}
+                </button>
+             )}
+           </div>
+
+           {selectedTxIds.length > 0 && (
+             <div className="fixed bottom-6 sm:bottom-10 left-4 right-4 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 z-[160] bg-emerald-950 text-white dark:bg-zinc-950 px-6 sm:px-10 py-5 sm:py-6 rounded-2xl sm:rounded-[2.5rem] shadow-[0_20px_60px_rgba(0,0,0,0.4)] flex flex-col sm:flex-row items-center gap-4 sm:gap-6 animate-in slide-in-from-bottom-20 duration-500 border border-emerald-900 dark:border-zinc-800">
+                <div className="flex items-center gap-4">
+                  <div className="w-8 h-8 sm:w-10 sm:h-10 bg-emerald-500 rounded-full flex items-center justify-center text-emerald-950 font-black shrink-0">
+                    {selectedTxIds.length}
+                  </div>
+                  <span className="text-[11px] sm:text-sm font-black uppercase tracking-widest">Batch Actions Active</span>
+                </div>
+                <div className="flex gap-2 w-full sm:w-auto">
+                   <button onClick={() => handleBulkAction(TransactionStatus.APPROVED)} className="flex-1 sm:flex-none px-6 sm:px-8 py-3.5 sm:py-4 bg-emerald-500 text-emerald-950 rounded-xl sm:rounded-2xl font-black uppercase text-[9px] sm:text-[10px] tracking-widest hover:bg-emerald-400 transition-all active:scale-95 shadow-lg">Approve</button>
+                   <button onClick={() => handleBulkAction(TransactionStatus.REJECTED)} className="flex-1 sm:flex-none px-6 sm:px-8 py-3.5 sm:py-4 bg-red-600 text-white rounded-xl sm:rounded-2xl font-black uppercase text-[9px] sm:text-[10px] tracking-widest hover:bg-red-500 transition-all active:scale-95 shadow-lg">Reject</button>
+                </div>
+             </div>
+           )}
+           
+           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-8 relative pb-20">
+              {pendingTransactions.length === 0 ? (
+                <div className="col-span-full py-20 flex flex-col items-center justify-center text-slate-300 dark:text-zinc-800">
+                   <CheckCircle2 size={64} className="mb-4 opacity-20" />
+                   <p className="font-black uppercase tracking-widest text-xs sm:text-sm">All Clear</p>
+                </div>
+              ) : pendingTransactions.map(t => (
+                <Card 
+                  key={t.id} 
+                  onClick={() => toggleTxSelection(t.id)} 
+                  className={`p-6 sm:p-8 border-2 transition-all relative overflow-hidden group rounded-[1.5rem] sm:rounded-[2rem] ${selectedTxIds.includes(t.id) ? 'border-emerald-500 bg-emerald-50/50 dark:bg-emerald-950/20' : 'border-transparent'}`}
+                >
+                   <div className="flex justify-between items-start relative z-10">
+                      <div className="flex items-center gap-4 sm:gap-6">
+                         <div className={`w-7 h-7 sm:w-8 sm:h-8 rounded-xl border-2 flex items-center justify-center transition-all shrink-0 ${selectedTxIds.includes(t.id) ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-200 dark:border-zinc-800 group-hover:border-emerald-300'}`}>
+                            {selectedTxIds.includes(t.id) ? <CheckSquare size={14} strokeWidth={3} /> : <Square size={14} className="opacity-10" />}
+                         </div>
+
+                         <div className="w-12 h-12 sm:w-14 sm:h-14 bg-slate-50 dark:bg-zinc-800 rounded-2xl flex items-center justify-center text-slate-400 dark:text-zinc-500 group-hover:bg-white dark:group-hover:bg-zinc-700 group-hover:shadow-inner transition-all shrink-0">
+                            {t.type === 'TOPUP' ? <ArrowUpCircle size={24} className="text-emerald-600 dark:text-emerald-400" /> : <Receipt size={24} />}
+                         </div>
+                         <div className="min-w-0">
+                            <p className="text-base sm:text-lg font-black text-emerald-950 dark:text-emerald-50 uppercase tracking-tight truncate max-w-[120px] sm:max-w-[150px]">{t.vendor}</p>
+                            <p className="text-[9px] sm:text-[10px] font-bold text-slate-400 dark:text-zinc-500 uppercase tracking-widest truncate">{t.userName} • {t.date}</p>
+                         </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                         <p className="text-xl sm:text-2xl font-black text-emerald-900 dark:text-emerald-400 tracking-tighter tabular-nums">{t.amount.toLocaleString()}</p>
+                         <p className="text-[8px] sm:text-[9px] font-bold text-slate-400 dark:text-zinc-500 uppercase tracking-widest">AED {t.type}</p>
+                      </div>
+                   </div>
+
+                   {/* Extracted Items Section */}
+                   {t.items && t.items.length > 0 && (
+                     <div className="mt-6 border-t border-slate-100 dark:border-zinc-800 pt-4">
+                        <button 
+                          onClick={(e) => toggleTxExpansion(t.id, e)}
+                          className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-emerald-800 dark:text-emerald-400 hover:text-emerald-600 transition-colors"
+                        >
+                           {expandedTxIds.includes(t.id) ? <ChevronDown size={14} /> : <ChevronRightIcon size={14} />}
+                           {expandedTxIds.includes(t.id) ? 'Hide Item Details' : `Show ${t.items.length} Items Detected`}
+                        </button>
+
+                        {expandedTxIds.includes(t.id) && (
+                          <div className="mt-4 space-y-3 animate-in slide-in-from-top-2 duration-300">
+                             <div className="grid grid-cols-12 gap-2 text-[8px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest px-2">
+                                <div className="col-span-6">Description</div>
+                                <div className="col-span-2 text-center">Qty</div>
+                                <div className="col-span-4 text-right">Unit Price</div>
+                             </div>
+                             {t.items.map((item, idx) => (
+                                <div key={idx} className="grid grid-cols-12 gap-2 items-center bg-slate-50/50 dark:bg-zinc-800/40 p-3 rounded-xl border border-slate-100 dark:border-zinc-800">
+                                   <div className="col-span-6 font-bold text-emerald-950 dark:text-emerald-50 text-[10px] truncate">{item.description}</div>
+                                   <div className="col-span-2 text-center font-black text-emerald-800 dark:text-emerald-400 text-[10px]">{item.quantity}</div>
+                                   <div className="col-span-4 text-right font-black text-emerald-950 dark:text-emerald-50 text-[10px] tabular-nums">{(item.price || 0).toLocaleString()} <span className="text-[8px] font-normal opacity-40">AED</span></div>
+                                </div>
+                             ))}
+                          </div>
+                        )}
+                     </div>
+                   )}
+
+                   {selectedTxIds.includes(t.id) && (
+                     <div className="absolute top-0 right-0 p-4 opacity-5">
+                        <Check size={80} strokeWidth={4} />
+                     </div>
+                   )}
+                </Card>
+              ))}
+           </div>
+        </div>
+      )}
+
+      {/* Responsive MODALS */}
+      {(editingUser || isAddingUser) && (
+        <div className="fixed inset-0 z-[200] bg-emerald-950/95 dark:bg-zinc-950/95 backdrop-blur-2xl flex items-center justify-center p-4 sm:p-6 animate-in fade-in duration-300">
+           <div className="w-full max-w-lg bg-white dark:bg-zinc-900 rounded-[2rem] sm:rounded-[3rem] p-8 sm:p-10 shadow-2xl relative max-h-[90vh] overflow-y-auto scrollbar-hide">
+              <button onClick={() => { setEditingUser(null); setIsAddingUser(false); }} className="absolute top-6 right-6 sm:top-8 sm:right-8 text-slate-300 dark:text-zinc-600 hover:text-slate-500 transition-colors">
+                 <X size={24} />
+              </button>
+              <div className="mb-6 sm:mb-8 text-center">
+                 <h2 className="text-xl sm:text-2xl font-black text-emerald-950 dark:text-emerald-50 tracking-tighter uppercase">{isAddingUser ? 'Deploy New Staff' : 'Modify Record'}</h2>
+                 <p className="text-[9px] sm:text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest mt-1">Tier-1 Access Control</p>
+              </div>
+              <div className="space-y-4">
+                 <div className="space-y-1">
+                    <label className="text-[9px] sm:text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest ml-4">Full Name</label>
+                    <input type="text" value={formName} onChange={(e) => setFormName(e.target.value)} className="w-full px-5 sm:px-6 py-3.5 sm:py-4 bg-slate-50 dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700 rounded-2xl font-bold focus:border-emerald-500 outline-none text-sm text-emerald-950 dark:text-emerald-50" placeholder="Enter Full Name" />
+                 </div>
+                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                        <label className="text-[9px] sm:text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest ml-4">Monthly Salary (AED)</label>
+                        <input type="number" value={formSalary} onChange={(e) => setFormSalary(parseFloat(e.target.value) || 0)} className="w-full px-5 sm:px-6 py-3.5 sm:py-4 bg-slate-50 dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700 rounded-2xl font-bold focus:border-emerald-500 outline-none text-sm text-emerald-950 dark:text-emerald-50" />
+                    </div>
+                    <div className="space-y-1">
+                        <label className="text-[9px] sm:text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest ml-4">OT Rate /Hr</label>
+                        <input type="number" value={formOTRate} onChange={(e) => setFormOTRate(parseFloat(e.target.value) || 0)} className="w-full px-5 sm:px-6 py-3.5 sm:py-4 bg-slate-50 dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700 rounded-2xl font-bold focus:border-emerald-500 outline-none text-sm text-emerald-950 dark:text-emerald-50" />
+                    </div>
+                 </div>
+                 <div className="space-y-1">
+                    <label className="text-[9px] sm:text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest ml-4">Initial Wallet (AED)</label>
+                    <input type="number" value={formBalance} onChange={(e) => setFormBalance(parseFloat(e.target.value) || 0)} className="w-full px-5 sm:px-6 py-3.5 sm:py-4 bg-slate-50 dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700 rounded-2xl font-bold focus:border-emerald-500 outline-none text-sm text-emerald-950 dark:text-emerald-50" />
+                 </div>
+                 <div className="space-y-1">
+                    <label className="text-[9px] sm:text-[10px] font-black text-slate-400 dark:text-zinc-500 uppercase tracking-widest ml-4">Access Code</label>
+                    <input type="text" value={formPassword} onChange={(e) => setFormPassword(e.target.value)} className="w-full px-5 sm:px-6 py-3.5 sm:py-4 bg-slate-50 dark:bg-zinc-800 border border-slate-100 dark:border-zinc-700 rounded-2xl font-bold focus:border-emerald-500 outline-none text-sm text-emerald-950 dark:text-emerald-50" placeholder="Access Passcode" />
+                 </div>
+                 <Button onClick={isAddingUser ? handleAddUser : handleSaveEdit} className="w-full py-5 rounded-[2rem] mt-4 shadow-xl text-xs sm:text-sm">
+                   {isAddingUser ? 'Authorize Deployment' : 'Synchronize Record'}
+                 </Button>
+              </div>
+           </div>
+        </div>
+      )}
+
+      {/* Fullscreen Image Preview */}
+      {viewingImage && (
+        <div 
+          className="fixed inset-0 z-[300] bg-black/95 flex items-center justify-center p-4 sm:p-10 backdrop-blur-md animate-in fade-in duration-300"
+          onClick={() => setViewingImage(null)}
+        >
+          <img src={viewingImage} className="max-w-full max-h-full rounded-2xl shadow-2xl object-contain animate-in zoom-in-95 duration-500" alt="Full receipt" />
+          <button className="absolute top-6 right-6 sm:top-10 sm:right-10 text-white/50 hover:text-white transition-colors">
+            <X size={32} />
+          </button>
         </div>
       )}
     </div>
